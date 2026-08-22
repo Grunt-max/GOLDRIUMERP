@@ -1,0 +1,40 @@
+# Python / Django runtime
+__pycache__/
+*.py[cod]
+.venv/
+db.sqlite3
+db*.sqlite3
+*.bak
+media/
+staticfiles/
+
+# Private production state and backups
+.artifact_work/
+backups/
+*.key
+*.log
+.env
+.env.*
+
+# Android / Gradle generated files
+android-app/.gradle/
+android-app/local.properties
+android-app/app/build/
+android-app/build/
+android-app/.idea/
+
+# Temporary and generated work
+node_modules/
+tmp/
+work/
+tools/
+outputs/legacy_import_*/
+outputs/android-sdk/
+outputs/*.log
+*.zip
+
+# Editor / OS metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

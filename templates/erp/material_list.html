@@ -1,0 +1,29 @@
+{% extends 'erp/base.html' %}
+{% block title %}기초 관리 · 재질{% endblock %}
+{% block content %}
+<section class="material-help"><strong>재질별 순도와 해리율</strong><p>14K·18K는 순도와 해리율을 적용하고, 24K·925 Silver는 해리율 적용을 끄면 판매 중량을 그대로 환산합니다.</p></section>
+<section class="panel material-panel">
+  <div class="panel-title"><h2>명세서 공급자 정보</h2><p>모든 거래명세서에 공통으로 표시됩니다.</p></div>
+  <form method="post" action="{% url 'erp:company_profile_edit' %}" class="material-form">{% csrf_token %}{{ company_form.as_p }}<button type="submit">저장</button></form>
+</section>
+<section class="panel material-panel">
+  <div class="panel-title"><h2>재질 추가</h2></div>
+  <form method="post" class="material-form">{% csrf_token %}{{ form.as_p }}<button type="submit">추가</button></form>
+</section>
+<section class="panel material-panel">
+  <div class="panel-title"><h2>등록 재질</h2></div>
+  <div class="sales-table-wrap"><table><thead><tr><th>재질명</th><th>순도</th><th>기본 해리율(%)</th><th>해리율 적용</th><th>사용</th><th></th></tr></thead><tbody>
+  {% for material in materials %}<tr><td><form id="material-{{ material.id }}" method="post" action="{% url 'erp:material_edit' material.id %}">{% csrf_token %}</form><input form="material-{{ material.id }}" class="field" name="name" value="{{ material.name }}" required></td><td><input form="material-{{ material.id }}" class="field" type="number" step="0.0001" name="purity_rate" value="{{ material.purity_rate }}" required></td><td><input form="material-{{ material.id }}" class="field" type="number" step="0.01" name="default_loss_rate" value="{{ material.default_loss_rate }}" required></td><td><input form="material-{{ material.id }}" type="checkbox" name="apply_loss_rate" {% if material.apply_loss_rate %}checked{% endif %}></td><td><input form="material-{{ material.id }}" type="checkbox" name="active" {% if material.active %}checked{% endif %}></td><td><button form="material-{{ material.id }}" type="submit">저장</button></td></tr>{% empty %}<tr><td colspan="6" class="empty">등록된 재질이 없습니다.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+<section class="panel material-panel">
+  <div class="panel-title"><h2>색상 추가</h2><p>판매등록과 상품 카탈로그에서 사용하는 색상입니다.</p></div>
+  <form method="post" action="{% url 'erp:color_create' %}" class="material-form">{% csrf_token %}{{ color_form.as_p }}<button type="submit">추가</button></form>
+</section>
+<section class="panel material-panel">
+  <div class="panel-title"><h2>등록 색상</h2></div>
+  <div class="sales-table-wrap"><table><thead><tr><th>색상코드</th><th>색상명</th><th>사용</th><th></th></tr></thead><tbody>
+  {% for color in colors %}<tr><td><form id="color-{{ color.id }}" method="post" action="{% url 'erp:color_edit' color.id %}">{% csrf_token %}</form><input form="color-{{ color.id }}" class="field" name="code" value="{{ color.code }}" required></td><td><input form="color-{{ color.id }}" class="field" name="name" value="{{ color.name }}" required></td><td><input form="color-{{ color.id }}" type="checkbox" name="active" {% if color.active %}checked{% endif %}></td><td><button form="color-{{ color.id }}" type="submit">저장</button></td></tr>{% empty %}<tr><td colspan="4" class="empty">등록된 색상이 없습니다.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endblock %}

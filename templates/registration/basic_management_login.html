@@ -1,0 +1,27 @@
+{% load static %}
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>기초관리 재인증 | 골드리움 킹</title>
+  <link rel="stylesheet" href="{% static 'erp/style.css' %}">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <header>
+      <strong>기초관리 재인증</strong>
+      <span>master 계정의 비밀번호를 다시 입력해 주세요.</span>
+    </header>
+    {% if error %}<p class="login-error">{{ error }}</p>{% endif %}
+    <form method="post" class="login-form">
+      {% csrf_token %}
+      <input type="hidden" name="next" value="{{ next }}">
+      <label>아이디<input type="text" value="{{ request.user.username }}" disabled></label>
+      <label>비밀번호<input type="password" name="password" autocomplete="current-password" autofocus required></label>
+      <button type="submit">기초관리 들어가기</button>
+    </form>
+    <p><a href="{% url 'erp:dashboard' %}">대시보드로 돌아가기</a></p>
+  </main>
+</body>
+</html>

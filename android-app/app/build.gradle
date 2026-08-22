@@ -1,0 +1,14 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'kr.co.goldrium.king'
+    compileSdk 37
+    defaultConfig {
+        applicationId 'kr.co.goldrium.king'
+        minSdk 26
+        targetSdk 37
+        versionCode 3
+        versionName '1.0.2'
+    }
+}
+dependencies { implementation 'androidx.core:core:1.17.0'; implementation 'androidx.activity:activity:1.12.2' }

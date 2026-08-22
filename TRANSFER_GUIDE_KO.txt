@@ -1,0 +1,20 @@
+Simple ERP 다른 PC 실행 안내
+============================
+
+1. Python 3.12 이상을 설치합니다.
+2. 이 ZIP 파일을 원하는 폴더에 압축 해제합니다.
+3. 압축 해제한 폴더에서 PowerShell을 엽니다.
+4. 아래 명령을 순서대로 실행합니다.
+
+   py -m venv .venv
+   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+   .\.venv\Scripts\python.exe manage.py migrate
+   .\.venv\Scripts\python.exe manage.py runserver
+
+5. 브라우저에서 http://127.0.0.1:8000/ 으로 접속합니다.
+
+주의
+----
+- db.sqlite3에 현재 거래처·재질·판매 데이터가 들어 있습니다.
+- 서버 실행 중에는 db.sqlite3를 복사하거나 덮어쓰지 마세요.
+- py 명령을 찾을 수 없다면 Python 설치 시 Add Python to PATH를 선택하세요.

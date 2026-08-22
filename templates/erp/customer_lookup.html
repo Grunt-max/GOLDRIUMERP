@@ -1,0 +1,9 @@
+{% extends 'erp/popup_base.html' %}{% block title %}거래처 검색{% endblock %}{% block content %}
+<section class="customer-lookup">
+  <header><strong>거래처 검색</strong><button type="button" onclick="window.close()">× 닫기</button></header>
+  <form method="get"><input type="hidden" name="target" value="{{ target }}"><input type="search" name="q" value="{{ query }}" placeholder="거래처명·담당자·전화번호" autofocus><button type="submit">검색</button></form>
+  <p>거래처 행을 클릭하면 등록 화면으로 가져옵니다.</p>
+  <div><table><thead><tr><th>거래처명</th><th>담당자</th><th>연락처</th><th>기본 해리율</th></tr></thead><tbody>{% for customer in customers %}<tr tabindex="0" role="button" data-customer-id="{{ customer.id }}" data-customer-name="{{ customer.name }}"><th>{{ customer.name }}</th><td>{{ customer.contact|default:'-' }}</td><td>{{ customer.phone|default:'-' }}</td><td>{% if customer.default_loss_rate is not None %}{{ customer.default_loss_rate }}%{% else %}-{% endif %}</td></tr>{% empty %}<tr><td colspan="4" class="empty">일치하는 거래처가 없습니다.</td></tr>{% endfor %}</tbody></table></div>
+</section>
+<script>const lookupTarget='{{ target|escapejs }}';function chooseCustomer(row){if(window.opener&&!window.opener.closed&&typeof window.opener.selectErpCustomer==='function'){window.opener.selectErpCustomer(row.dataset.customerId,row.dataset.customerName,lookupTarget);window.close()}else{alert('등록 화면을 찾을 수 없습니다. 등록창에서 다시 검색해 주세요.')}}document.querySelectorAll('[data-customer-id]').forEach(row=>{row.addEventListener('click',()=>chooseCustomer(row));row.addEventListener('keydown',event=>{if(event.key==='Enter')chooseCustomer(row)})});</script>
+{% endblock %}

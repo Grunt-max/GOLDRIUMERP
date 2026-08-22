@@ -1,0 +1,16 @@
+{% extends 'erp/popup_base.html' %}{% block title %}{{ customer.name }} 거래 원장{% endblock %}{% block content %}
+<div class="receivable-popup customer-ledger">
+  <div class="popup-title"><strong>{{ customer.name }} 거래 원장</strong><span>판매는 증가, 반품·결제는 차감됩니다.</span><button type="button" onclick="history.back()">× 돌아가기</button></div>
+  <form method="get" class="ledger-date-filter">
+    <label>시작일<input type="date" name="start_date" value="{{ start_date }}"></label>
+    <span>~</span>
+    <label>종료일<input type="date" name="end_date" value="{{ end_date }}"></label>
+    <button type="submit">조회</button>
+  </form>
+  <div class="receivable-cards"><article><span>현재 순금 미수</span><b class="receivable-value{% if gold_balance < 0 %} negative{% endif %}">{{ gold_balance|floatformat:3 }}g</b></article><article><span>현재 미수 공임</span><b class="receivable-value{% if labor_balance < 0 %} negative{% endif %}">{{ labor_balance|floatformat:0 }}원</b></article></div>
+  <div class="receivable-table-wrap"><table class="receivable-table ledger-table">
+    <thead><tr><th>일자</th><th>거래번호</th><th>구분</th><th>모델번호</th><th>재질</th><th>순금 증감(g)</th><th>공임 증감(원)</th><th>순금 잔액(g)</th><th>공임 잔액(원)</th><th>비고</th></tr></thead>
+    <tbody>{% for row in ledger %}<tr class="{% if row.item.entry_type == 'payment' %}payment-row{% elif row.item.entry_type == 'return' %}return-row{% endif %}"><td>{{ row.item.transaction.sale_date|date:'y-m-d' }}</td><td>{{ row.item.transaction.transaction_no }}</td><td>{{ row.item.get_entry_type_display }}</td><td>{{ row.item.model_number }}</td><td>{{ row.item.material|default:'-' }}</td><td class="receivable-value{% if row.gold_delta < 0 %} negative{% endif %}">{{ row.gold_delta|floatformat:3 }}</td><td class="receivable-value{% if row.labor_delta < 0 %} negative{% endif %}">{{ row.labor_delta|floatformat:0 }}</td><td class="receivable-value{% if row.gold_balance < 0 %} negative{% endif %}">{{ row.gold_balance|floatformat:3 }}</td><td class="receivable-value{% if row.labor_balance < 0 %} negative{% endif %}">{{ row.labor_balance|floatformat:0 }}</td><td>{{ row.item.memo|default:'-' }}</td></tr>{% empty %}<tr><td colspan="10" class="empty">선택한 기간의 거래 내역이 없습니다.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</div>
+{% endblock %}

@@ -1,0 +1,1382 @@
+from decimal import Decimal
+import calendar
+from datetime import date, timedelta
+from django.contrib import messages
+from django.core.paginator import Paginator
+from django.db import transaction
+from django.db.models import Q
+from django.http import JsonResponse
+from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
+from django.utils import timezone
+from django.utils.dateparse import parse_date
+from django.views.decorators.http import require_POST
+from .access import master_reauthentication_required
+from .forms import CompanyProfileForm, CustomerForm, DailyActivityForm, GoldLedgerEntryForm, MaterialForm, OrderForm, ProductColorForm, ProductForm, PurchaseHeaderForm, PurchaseLineFormSet, PurchaseSupplierForm, SaleHeaderForm, SaleLineFormSet
+from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, Factory, GoldLedgerEntry, Material, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, SaleItem, SaleTransaction, generate_transaction_no
+from .product_catalog import rebuild_product_weight_profiles
+
+
+def customer_receivable_totals(sales):
+    """Net a customer's sales and payments across transaction numbers."""
+    rows = list(sales)
+    sold_gold = sum((sale.total_pure_gold_weight for sale in rows), Decimal("0"))
+    paid_gold = sum((sale.paid_gold_weight for sale in rows), Decimal("0"))
+    sold_labor = sum((sale.total_labor_amount for sale in rows), Decimal("0"))
+    paid_labor = sum((sale.paid_labor_amount for sale in rows), Decimal("0"))
+    returned_items = SaleItem.objects.filter(transaction__in=rows, entry_type="return", is_deleted=False)
+    legacy_adjustments = SaleItem.objects.filter(
+        transaction__in=rows, entry_type__in=("wg", "dc", "vd"), is_deleted=False,
+    )
+    returned_gold = sum((item.pure_gold_weight for item in returned_items), Decimal("0"))
+    returned_labor = sum((item.total_amount for item in returned_items), Decimal("0"))
+    adjusted_gold = sum((item.pure_gold_weight for item in legacy_adjustments), Decimal("0"))
+    adjusted_labor = sum(
+        (item.total_amount for item in legacy_adjustments if item.entry_type in ("dc", "vd")),
+        Decimal("0"),
+    )
+    return {
+        "gold_receivable": sold_gold - returned_gold - paid_gold - adjusted_gold,
+        "cash_receivable": Decimal("0"),
+        "labor_receivable": sold_labor - returned_labor - paid_labor - adjusted_labor,
+    }
+
+
+def fulfill_matching_orders(customer, model_number, sold_quantity, completed_at=None):
+    """판매 수량을 동일 거래처·모델번호의 오래된 미출고 주문부터 반영한다."""
+    remaining_sale = sold_quantity
+    orders = Order.objects.select_for_update().filter(
+        customer=customer,
+        model_number__iexact=model_number.strip(),
+        source_type__in=("quick", "photo"),
+        status__in=("new", "partial"),
+        is_deleted=False,
+    ).order_by("ordered_at", "id")
+    for order in orders:
+        if remaining_sale <= 0:
+            break
+        open_quantity = order.remaining_quantity
+        if open_quantity <= 0:
+            continue
+        applied = min(open_quantity, remaining_sale)
+        order.fulfilled_quantity += applied
+        order.status = "done" if order.fulfilled_quantity >= order.quantity else "partial"
+        order.completed_at = completed_at if order.status == "done" else None
+        order.save(update_fields=["fulfilled_quantity", "status", "completed_at"])
+        remaining_sale -= applied
+
+
+def build_order_dashboard():
+    groups = {"14K": {}, "18K": {}}
+    open_orders = Order.objects.filter(
+        status__in=("new", "partial"), is_deleted=False
+    ).select_related("customer", "material")
+    for order in open_orders:
+        remaining = order.remaining_quantity
+        material_name = order.material.name.upper() if order.material else ""
+        if remaining <= 0 or material_name not in groups:
+            continue
+        key = (order.model_number, order.color or "-", order.delivery_type)
+        row = groups[material_name].setdefault(key, {
+            "material": material_name, "model_number": order.model_number,
+            "color": order.color or "-", "delivery_type": order.get_delivery_type_display(),
+            "remaining": Decimal("0"), "unit": order.order_unit, "order_count": 0,
+        })
+        row["remaining"] += remaining
+        row["order_count"] += 1
+    return {
+        material: sorted(rows.values(), key=lambda row: (row["model_number"], row["color"], row["delivery_type"]))
+        for material, rows in groups.items()
+    }
+
+
+def month_bounds(year, month):
+    start = date(year, month, 1)
+    end = date(year + (month == 12), 1 if month == 12 else month + 1, 1)
+    return start, end
+
+
+def monthly_sales_metrics(year, month):
+    start, end = month_bounds(year, month)
+    items = SaleItem.objects.filter(
+        transaction__sale_date__gte=start, transaction__sale_date__lt=end,
+        transaction__status__in=("new", "done"), is_deleted=False,
+        entry_type__in=("sale", "return"),
+    ).select_related("material")
+    base_gold = Decimal("0")
+    loss_gold = Decimal("0")
+    labor = Decimal("0")
+    for item in items:
+        sign = Decimal("-1") if item.entry_type == "return" else Decimal("1")
+        base = item.total_weight
+        if item.material and item.material.apply_loss_rate:
+            base *= item.material.purity_rate
+        base_gold += sign * base
+        loss_gold += sign * (base * item.loss_rate / Decimal("100"))
+        labor += sign * item.total_amount
+    purchase_base = Decimal("0")
+    purchase_loss = Decimal("0")
+    purchase_labor = Decimal("0")
+    for item in PurchaseEntry.objects.filter(purchase_date__gte=start, purchase_date__lt=end, is_deleted=False).select_related("material"):
+        base = item.actual_weight
+        if item.material.apply_loss_rate:
+            base *= item.material.purity_rate
+            purchase_loss += base * item.loss_rate / Decimal("100")
+        purchase_base += base
+        purchase_labor += item.purchase_amount
+    return {
+        "base_gold": base_gold.quantize(Decimal("0.001")),
+        "loss_gold": loss_gold.quantize(Decimal("0.0001")),
+        "total_gold": (base_gold + loss_gold).quantize(Decimal("0.001")),
+        "labor": labor,
+        "purchase_base_gold": purchase_base.quantize(Decimal("0.001")),
+        "purchase_loss_gold": purchase_loss.quantize(Decimal("0.0001")),
+        "purchase_labor": purchase_labor,
+        "margin_base_gold": (base_gold - purchase_base).quantize(Decimal("0.001")),
+        "margin_loss_gold": (loss_gold - purchase_loss).quantize(Decimal("0.0001")),
+        "margin_labor": labor - purchase_labor,
+    }
+
+
+def monthly_customer_sales(request):
+    today = timezone.localdate()
+    month_text = request.GET.get("month", f"{today:%Y-%m}")
+    try:
+        selected_month = date.fromisoformat(f"{month_text}-01")
+    except ValueError:
+        selected_month = today.replace(day=1)
+    start, end = month_bounds(selected_month.year, selected_month.month)
+    rows = {}
+    items = SaleItem.objects.filter(
+        transaction__sale_date__gte=start, transaction__sale_date__lt=end,
+        transaction__status__in=("new", "done"), is_deleted=False,
+        entry_type__in=("sale", "return"),
+    ).select_related("transaction__customer", "material")
+    for item in items:
+        row = rows.setdefault(item.transaction.customer_id, {
+            "customer": item.transaction.customer,
+            "base_gold": Decimal("0"), "loss_gold": Decimal("0"),
+            "total_gold": Decimal("0"), "labor": Decimal("0"), "quantity": Decimal("0"),
+        })
+        sign = Decimal("-1") if item.entry_type == "return" else Decimal("1")
+        base = item.total_weight
+        if item.material and item.material.apply_loss_rate:
+            base *= item.material.purity_rate
+        loss = base * item.loss_rate / Decimal("100")
+        row["base_gold"] += sign * base
+        row["loss_gold"] += sign * loss
+        row["total_gold"] += sign * (base + loss)
+        row["labor"] += sign * item.total_amount
+        row["quantity"] += sign * item.quantity
+    sort_key = request.GET.get("sort", "total_gold")
+    sort_fields = {"quantity", "base_gold", "loss_gold", "total_gold", "labor"}
+    if sort_key == "customer":
+        customer_rows = sorted(rows.values(), key=lambda row: row["customer"].name)
+    else:
+        if sort_key not in sort_fields:
+            sort_key = "total_gold"
+        customer_rows = sorted(rows.values(), key=lambda row: (row[sort_key], row["customer"].name), reverse=True)
+    totals = {
+        key: sum((row[key] for row in customer_rows), Decimal("0"))
+        for key in ("base_gold", "loss_gold", "total_gold", "labor", "quantity")
+    }
+    return render(request, "erp/monthly_customer_sales.html", {
+        "rows": customer_rows, "totals": totals, "selected_month": selected_month,
+        "month_text": f"{selected_month:%Y-%m}", "selected_sort": sort_key,
+    })
+
+
+def activity_calendar(year, month):
+    start, end = month_bounds(year, month)
+    activity_map = {}
+    for activity in DailyActivity.objects.filter(
+        activity_date__gte=start, activity_date__lt=end, is_deleted=False
+    ).select_related("created_by").prefetch_related("photos"):
+        activity_map.setdefault(activity.activity_date, []).append(activity)
+    sale_counts = {}
+    payment_counts = {}
+    shipment_counts = {}
+    order_counts = {}
+    gold_counts = {}
+    for sale in SaleTransaction.objects.filter(
+        sale_date__gte=start, sale_date__lt=end, status__in=("new", "done"),
+        items__entry_type__in=("sale", "return"), items__is_deleted=False,
+    ).distinct():
+        sale_counts[sale.sale_date] = sale_counts.get(sale.sale_date, 0) + 1
+    for payment in SaleItem.objects.filter(
+        transaction__sale_date__gte=start, transaction__sale_date__lt=end,
+        transaction__status__in=("new", "done"), entry_type="payment", is_deleted=False,
+    ).select_related("transaction"):
+        day = payment.transaction.sale_date
+        payment_counts[day] = payment_counts.get(day, 0) + 1
+    for order in Order.objects.filter(completed_at__gte=start, completed_at__lt=end, status="done", is_deleted=False):
+        shipment_counts[order.completed_at] = shipment_counts.get(order.completed_at, 0) + 1
+    for order in Order.objects.filter(ordered_at__gte=start, ordered_at__lt=end, is_deleted=False).exclude(status="cancel"):
+        order_counts[order.ordered_at] = order_counts.get(order.ordered_at, 0) + 1
+    for entry in GoldLedgerEntry.objects.filter(entry_date__gte=start, entry_date__lt=end, is_deleted=False):
+        gold_counts[entry.entry_date] = gold_counts.get(entry.entry_date, 0) + 1
+    weeks = []
+    for week in calendar.Calendar(firstweekday=6).monthdatescalendar(year, month):
+        weeks.append([{
+            "date": day, "in_month": day.month == month, "is_today": day == timezone.localdate(),
+            "activities": activity_map.get(day, []), "sale_count": sale_counts.get(day, 0),
+            "payment_count": payment_counts.get(day, 0), "shipment_count": shipment_counts.get(day, 0),
+            "order_count": order_counts.get(day, 0),
+            "gold_count": gold_counts.get(day, 0),
+        } for day in week])
+    return weeks
+
+
+def dashboard(request):
+    today = timezone.localdate()
+    month_start, next_month_start = month_bounds(today.year, today.month)
+    sales = SaleTransaction.objects.exclude(status="cancel")
+    total_sales = sum((sale.total_labor_amount for sale in sales), Decimal("0"))
+    total_gold_receivable = sum((sale.gold_receivable for sale in sales), Decimal("0"))
+    total_labor_receivable = sum((sale.labor_receivable for sale in sales), Decimal("0"))
+    overdue_groups = {}
+    overdue_orders = Order.objects.filter(
+        status__in=("new", "partial"), is_deleted=False,
+        due_date__lt=timezone.localdate(),
+    ).select_related("customer").order_by("due_date", "customer__name")
+    for order in overdue_orders:
+        group = overdue_groups.setdefault(order.customer_id, {
+            "customer": order.customer, "count": 0, "oldest_due_date": order.due_date,
+        })
+        group["count"] += 1
+        if order.due_date < group["oldest_due_date"]:
+            group["oldest_due_date"] = order.due_date
+    return render(request, "erp/dashboard.html", {
+        "order_count": sales.count(), "total_sales": total_sales,
+        "total_gold_receivable": total_gold_receivable,
+        "total_labor_receivable": total_labor_receivable,
+        "recent_payments": SaleItem.objects.filter(
+            entry_type="payment", is_deleted=False,
+            transaction__status__in=("new", "done"),
+        ).select_related("transaction", "transaction__customer").order_by(
+            "-transaction__sale_date", "-transaction_id", "-id"
+        )[:8],
+        "order_dashboard": build_order_dashboard(),
+        "overdue_customers": list(overdue_groups.values()),
+        "month_metrics": monthly_sales_metrics(today.year, today.month),
+        "month_start": month_start, "month_end": next_month_start - timedelta(days=1),
+        "calendar_weeks": activity_calendar(today.year, today.month),
+        "calendar_year": today.year, "calendar_month": today.month,
+        "activity_form": DailyActivityForm(),
+        "customers": Customer.objects.order_by("name"),
+        "today": today,
+    })
+
+
+def daily_activity_list(request):
+    today = timezone.localdate()
+    month_text = request.GET.get("month", f"{today:%Y-%m}")
+    try:
+        selected_month = date.fromisoformat(f"{month_text}-01")
+    except ValueError:
+        selected_month = today.replace(day=1)
+    selected_date = parse_date(request.GET.get("date", "")) or today
+    day_activities = DailyActivity.objects.filter(
+        activity_date=selected_date, is_deleted=False
+    ).select_related("created_by").prefetch_related("photos")
+    customer_sales = {}
+    day_items = SaleItem.objects.filter(
+        transaction__sale_date=selected_date,
+        transaction__status__in=("new", "done"), is_deleted=False,
+        entry_type__in=("sale", "return", "payment"),
+    ).select_related("transaction__customer")
+    for item in day_items:
+        customer = item.transaction.customer
+        row = customer_sales.setdefault(customer.pk, {
+            "customer": customer, "sale_gold": Decimal("0"), "sale_labor": Decimal("0"),
+            "payment_gold": Decimal("0"), "payment_labor": Decimal("0"),
+        })
+        if item.entry_type == "payment":
+            row["payment_gold"] += item.pure_gold_weight
+            row["payment_labor"] += item.total_amount
+        else:
+            sign = Decimal("-1") if item.entry_type == "return" else Decimal("1")
+            row["sale_gold"] += sign * item.pure_gold_weight
+            row["sale_labor"] += sign * item.total_amount
+    day_shipments = Order.objects.filter(
+        completed_at=selected_date, status="done", is_deleted=False
+    ).select_related("customer", "material")
+    day_orders = Order.objects.filter(
+        ordered_at=selected_date, is_deleted=False
+    ).exclude(status="cancel").select_related("customer", "material")
+    day_gold_entries = GoldLedgerEntry.objects.filter(
+        entry_date=selected_date, is_deleted=False
+    ).select_related("factory", "material")
+    return render(request, "erp/daily_activity_list.html", {
+        "calendar_weeks": activity_calendar(selected_month.year, selected_month.month),
+        "calendar_year": selected_month.year, "calendar_month": selected_month.month,
+        "selected_date": selected_date, "day_activities": day_activities,
+        "day_customer_sales": sorted(customer_sales.values(), key=lambda row: row["customer"].name),
+        "day_shipments": day_shipments,
+        "day_orders": day_orders,
+        "day_gold_entries": day_gold_entries,
+        "activity_form": DailyActivityForm(initial={"activity_date": selected_date}),
+    })
+
+
+@require_POST
+def daily_activity_create(request):
+    form = DailyActivityForm(request.POST, request.FILES)
+    if form.is_valid():
+        activity = form.save(commit=False)
+        if request.user.is_authenticated:
+            activity.created_by = request.user
+        activity.save()
+        for image in form.cleaned_data.get("images", []):
+            DailyActivityPhoto.objects.create(activity=activity, image=image)
+        messages.success(request, "당일 행적을 등록했습니다.")
+    else:
+        messages.error(request, "행적 날짜와 업무 내용을 확인하세요.")
+    if request.POST.get("return_to") == "activity_list":
+        activity_date = request.POST.get("activity_date", "")
+        return redirect(f"{request.path.replace('/new/', '/')}?date={activity_date}&month={activity_date[:7]}")
+    return redirect("erp:dashboard")
+
+
+@require_POST
+def daily_activity_delete(request, pk):
+    activity = get_object_or_404(DailyActivity, pk=pk, is_deleted=False)
+    activity.is_deleted = True
+    activity.deleted_at = timezone.now()
+    activity.save(update_fields=["is_deleted", "deleted_at"])
+    messages.success(request, "당일 행적을 삭제 처리했습니다.")
+    return redirect(f"/activities/?date={activity.activity_date}&month={activity.activity_date:%Y-%m}")
+
+
+def gold_ledger_list(request):
+    today = timezone.localdate()
+    latest_issue = GoldLedgerEntry.objects.filter(is_deleted=False, entry_type="issue").order_by("-entry_date", "-id").first()
+    default_start = str(latest_issue.entry_date) if latest_issue else ""
+    start_date = request.GET.get("start_date") or default_start
+    end_date = request.GET.get("end_date") or str(today)
+    entry_type = request.GET.get("entry_type", "")
+    include_all_data = request.GET.get("include_all_data") == "1"
+    start = parse_date(start_date)
+    end = parse_date(end_date)
+    closing = GoldLedgerEntry.objects.filter(is_deleted=False, is_closing_transfer=True).order_by("-entry_date", "-id").first()
+    ledger_start = closing.entry_date + timedelta(days=1) if closing else None
+    effective_start = start if include_all_data else max(filter(None, [start, ledger_start]), default=None)
+
+    manual = GoldLedgerEntry.objects.filter(is_deleted=False).select_related("material", "created_by", "purchase_supplier")
+    payments = SaleItem.objects.filter(entry_type="payment", is_deleted=False).exclude(transaction__status="cancel").select_related("transaction__customer", "material")
+    purchases = PurchaseEntry.objects.filter(is_deleted=False).select_related("supplier", "material")
+    if effective_start:
+        manual = manual.filter(entry_date__gte=effective_start)
+        payments = payments.filter(transaction__sale_date__gte=effective_start)
+        purchases = purchases.filter(purchase_date__gte=effective_start)
+    if end:
+        manual, payments, purchases = manual.filter(entry_date__lte=end), payments.filter(transaction__sale_date__lte=end), purchases.filter(purchase_date__lte=end)
+    rows = []
+    for item in manual.filter(entry_type__in=("issue", "adjustment")):
+        row_type = "supplier_issue" if item.entry_type == "issue" and item.destination_type == "purchase_supplier" else "own_factory_issue" if item.entry_type == "issue" else "adjustment"
+        destination = item.purchase_supplier.name if item.purchase_supplier_id else item.factory.name
+        rows.append({"date": item.entry_date, "type": row_type, "type_label": "매입처 금 불출" if row_type == "supplier_issue" else "우리공장 금 불출" if row_type == "own_factory_issue" else "재고 조정", "material": item.material, "actual": item.actual_weight, "pure": item.pure_gold_weight, "effect": item.gold_balance_effect, "source": item.reference_no, "memo": f"{destination} · {item.memo}" if item.memo else destination, "image": item.image, "manual": item})
+    for item in payments:
+        rows.append({"date": item.transaction.sale_date, "type": "customer_payment", "type_label": "거래처 금 결제", "material": item.material, "actual": item.weight, "pure": item.pure_gold_weight, "effect": item.pure_gold_weight, "source": item.transaction.transaction_no, "memo": item.transaction.customer.name, "image": None, "manual": None})
+    if entry_type:
+        rows = [row for row in rows if row["type"] == entry_type]
+    rows.sort(key=lambda row: (row["date"], row["source"] or ""), reverse=True)
+    summary = {"customer_payment": Decimal("0"), "own_factory_issue": Decimal("0"), "supplier_issue": Decimal("0"), "purchase_pure": Decimal("0"), "purchase_loss": Decimal("0"), "balance_effect": Decimal("0")}
+    for row in rows:
+        if row["type"] in summary:
+            summary[row["type"]] += row["pure"]
+        summary["balance_effect"] += row["effect"]
+    for item in purchases:
+        base_pure = (item.actual_weight * item.material.purity_rate).quantize(Decimal("0.001"))
+        summary["purchase_pure"] += item.pure_gold_weight
+        summary["purchase_loss"] += item.pure_gold_weight - base_pure
+
+    all_manual = GoldLedgerEntry.objects.filter(is_deleted=False, entry_type__in=("issue", "adjustment"))
+    all_payments = SaleItem.objects.filter(entry_type="payment", is_deleted=False).exclude(transaction__status="cancel")
+    if ledger_start:
+        all_manual = all_manual.filter(entry_date__gte=ledger_start)
+        all_payments = all_payments.filter(transaction__sale_date__gte=ledger_start)
+    current_balance = sum((item.gold_balance_effect for item in all_manual), Decimal("0")) + sum((item.pure_gold_weight for item in all_payments), Decimal("0"))
+    return render(request, "erp/gold_ledger_list.html", {
+        "entries": rows, "summary": summary, "current_balance": current_balance,
+        "entry_types": [("customer_payment", "거래처 금 결제"), ("own_factory_issue", "우리공장 금 불출"), ("supplier_issue", "매입처 금 불출"), ("adjustment", "재고 조정")],
+        "start_date": start_date, "end_date": end_date, "selected_entry_type": entry_type,
+        "include_all_data": include_all_data, "ledger_cutoff": closing.entry_date if closing else None,
+        "entry_form": GoldLedgerEntryForm(),
+    })
+
+
+@require_POST
+def gold_ledger_create(request):
+    form = GoldLedgerEntryForm(request.POST, request.FILES)
+    if form.is_valid():
+        entry = form.save(commit=False)
+        entry.factory, _ = Factory.objects.get_or_create(name="우리공장")
+        if request.user.is_authenticated:
+            entry.created_by = request.user
+        entry.save()
+        messages.success(request, "금 수불 내역을 등록했습니다.")
+    else:
+        messages.error(request, "수불 구분·재질·중량을 확인하세요.")
+    return redirect("erp:gold_ledger_list")
+
+
+def purchase_list(request):
+    today = timezone.localdate()
+    start_date = request.GET.get("start_date") or str(today.replace(day=1))
+    end_date = request.GET.get("end_date") or str(today)
+    supplier_id = request.GET.get("supplier", "")
+    entries = PurchaseEntry.objects.filter(is_deleted=False).select_related("supplier", "material", "batch")
+    if parse_date(start_date): entries = entries.filter(purchase_date__gte=start_date)
+    if parse_date(end_date): entries = entries.filter(purchase_date__lte=end_date)
+    if supplier_id.isdigit(): entries = entries.filter(supplier_id=supplier_id)
+    rows = list(entries)
+    return render(request, "erp/purchase_list.html", {"entries": rows, "start_date": start_date, "end_date": end_date, "selected_supplier": supplier_id, "suppliers": PurchaseSupplier.objects.filter(active=True), "total_actual": sum((x.actual_weight for x in rows), Decimal("0")), "total_pure": sum((x.pure_gold_weight for x in rows), Decimal("0")), "total_amount": sum((x.purchase_amount for x in rows), Decimal("0")), "supplier_form": PurchaseSupplierForm()})
+
+
+@require_POST
+def purchase_supplier_create(request):
+    form = PurchaseSupplierForm(request.POST)
+    if form.is_valid(): form.save(); messages.success(request, "매입처를 등록했습니다.")
+    else: messages.error(request, "매입처 정보를 확인하세요.")
+    return redirect("erp:purchase_list")
+
+
+def purchase_create(request):
+    header_form = PurchaseHeaderForm(request.POST or None, request.FILES or None, prefix="header")
+    line_formset = PurchaseLineFormSet(request.POST or None, request.FILES or None, prefix="lines")
+    if request.method == "POST" and header_form.is_valid() and line_formset.is_valid():
+        purchase_date = header_form.cleaned_data["purchase_date"]
+        supplier = header_form.cleaned_data["supplier"]
+        reference_no = header_form.cleaned_data.get("reference_no", "").strip()
+        slip_image = header_form.cleaned_data.get("image")
+        with transaction.atomic():
+            if not reference_no:
+                daily_count = PurchaseBatch.objects.filter(purchase_date=purchase_date).count() + 1
+                reference_no = f"P{purchase_date:%y%m%d}{daily_count:03d}"
+            batch = PurchaseBatch.objects.create(purchase_date=purchase_date, supplier=supplier, reference_no=reference_no, image=slip_image, created_by=request.user if request.user.is_authenticated else None)
+            saved = 0
+            for line in line_formset:
+                data = line.cleaned_data
+                if data.get("DELETE") or not data.get("material") or not data.get("actual_weight"):
+                    continue
+                entry = line.save(commit=False)
+                entry.batch, entry.purchase_date, entry.supplier, entry.reference_no = batch, purchase_date, supplier, reference_no
+                if data.get("loss_rate") is None:
+                    entry.loss_rate = supplier.default_loss_rate if supplier.default_loss_rate is not None else entry.material.default_loss_rate
+                if request.user.is_authenticated:
+                    entry.created_by = request.user
+                entry.save()
+                saved += 1
+        messages.success(request, f"매입번호 {reference_no}로 {saved}개 품목을 등록했습니다.")
+        return redirect("erp:purchase_list")
+    if request.method == "POST":
+        messages.error(request, "매입처와 입력 행의 재질·중량을 확인하세요.")
+    material_defaults = [{"id": material.pk, "purity_rate": str(material.purity_rate), "loss_rate": str(material.default_loss_rate), "apply_loss_rate": material.apply_loss_rate} for material in Material.objects.filter(active=True)]
+    supplier_defaults = [{"id": supplier.pk, "loss_rate": str(supplier.default_loss_rate) if supplier.default_loss_rate is not None else None} for supplier in PurchaseSupplier.objects.filter(active=True)]
+    return render(request, "erp/purchase_form.html", {"header_form": header_form, "line_formset": line_formset, "material_defaults": material_defaults, "supplier_defaults": supplier_defaults})
+
+
+@require_POST
+def purchase_delete(request, pk):
+    entry = get_object_or_404(PurchaseEntry, pk=pk, is_deleted=False)
+    entry.is_deleted, entry.deleted_at = True, timezone.now()
+    entry.save(update_fields=["is_deleted", "deleted_at"])
+    messages.success(request, "매입 내역을 삭제 처리했습니다.")
+    return redirect("erp:purchase_list")
+
+
+@require_POST
+def gold_ledger_delete(request, pk):
+    entry = get_object_or_404(GoldLedgerEntry, pk=pk, is_deleted=False)
+    entry.is_deleted = True
+    entry.deleted_at = timezone.now()
+    entry.save(update_fields=["is_deleted", "deleted_at"])
+    messages.success(request, "금 수불 내역을 삭제 처리했습니다.")
+    return redirect("erp:gold_ledger_list")
+
+
+def order_list(request):
+    order_dashboard = build_order_dashboard()
+    orders = Order.objects.filter(is_deleted=False).select_related("customer", "product", "material")
+    start_date = request.GET.get("start_date", "")
+    end_date = request.GET.get("end_date") or str(timezone.localdate())
+    status = request.GET.get("status", "")
+    include_completed = request.GET.get("include_completed") == "1"
+    customer_id = request.GET.get("customer", "")
+    query = request.GET.get("q", "").strip()
+    page_size = request.GET.get("page_size", "10")
+    if page_size not in {"10", "30", "50", "100"}:
+        page_size = "10"
+    date_type = request.GET.get("date_type", "completed" if status == "done" else "ordered")
+    date_field = "completed_at" if date_type == "completed" else "ordered_at"
+    if parse_date(start_date):
+        orders = orders.filter(**{f"{date_field}__gte": start_date})
+    if parse_date(end_date):
+        orders = orders.filter(**{f"{date_field}__lte": end_date})
+    if not include_completed and status != "done":
+        orders = orders.exclude(status="done")
+    if status in {"new", "partial", "done", "cancel"}:
+        orders = orders.filter(status=status)
+    if customer_id.isdigit():
+        orders = orders.filter(customer_id=customer_id)
+    if query:
+        orders = orders.filter(Q(customer__name__icontains=query) | Q(model_number__icontains=query) | Q(raw_order_text__icontains=query) | Q(memo__icontains=query))
+    result_count = orders.count()
+    page_obj = Paginator(orders, int(page_size)).get_page(request.GET.get("page"))
+    return render(request, "erp/order_list.html", {
+        "orders": page_obj, "page_obj": page_obj, "result_count": result_count,
+        "order_dashboard": order_dashboard,
+        "customers": Customer.objects.filter(customer_type="sales"),
+        "start_date": start_date, "end_date": end_date, "selected_status": status,
+        "selected_customer": customer_id, "query": query, "date_type": date_type,
+        "include_completed": include_completed,
+        "today": timezone.localdate(), "page_size": page_size,
+        "create_form": OrderForm(),
+        "products": Product.objects.filter(active=True).only("code", "name"),
+    })
+
+
+def order_customer_outstanding(request):
+    """거래처별 미출고 주문을 팝업에서 조회한다."""
+    grouped = {}
+    orders = Order.objects.filter(status__in=("new", "partial"), is_deleted=False).select_related(
+        "customer", "material"
+    ).order_by("customer__name", "due_date", "ordered_at", "id")
+    for order in orders:
+        remaining = order.remaining_quantity
+        if remaining <= 0:
+            continue
+        group = grouped.setdefault(order.customer_id, {
+            "customer": order.customer, "items": [],
+            "semi_remaining": Decimal("0"), "finished_remaining": Decimal("0"),
+        })
+        group["items"].append(order)
+        if order.delivery_type == "semi":
+            group["semi_remaining"] += remaining
+        else:
+            group["finished_remaining"] += remaining
+    return render(request, "erp/order_customer_outstanding.html", {
+        "customer_groups": list(grouped.values()),
+        "today": timezone.localdate(),
+    })
+
+
+def order_create(request):
+    form = OrderForm(request.POST or None, request.FILES or None)
+    if request.method == "POST" and form.is_valid():
+        parsed_lines = form.cleaned_data.get("parsed_lines") or []
+        if parsed_lines:
+            image_name = None
+            with transaction.atomic():
+                for index, parsed in enumerate(parsed_lines):
+                    product = Product.objects.filter(code__iexact=parsed["model_number"], active=True).first()
+                    material = product.material if product and product.material_id else parsed["material"]
+                    loss_rate = (
+                        product.default_loss_rate if product and product.default_loss_rate is not None
+                        else form.cleaned_data["customer"].default_loss_rate
+                        if form.cleaned_data["customer"].default_loss_rate is not None
+                        else material.default_loss_rate
+                    )
+                    order = Order(
+                        customer=form.cleaned_data["customer"], product=product,
+                        model_number=parsed["model_number"], material=material,
+                        weight=product.default_weight or 0 if product else 0,
+                        unit_price=product.unit_price if product else 0,
+                        loss_rate=loss_rate or 0, quantity=parsed["quantity"],
+                        status=form.cleaned_data["status"], ordered_at=form.cleaned_data["ordered_at"],
+                        due_date=form.cleaned_data["due_date"], source_type=form.cleaned_data["source_type"],
+                        raw_order_text=form.cleaned_data["raw_order_text"], color=parsed["color"],
+                        delivery_type=parsed["delivery_type"], length_spec=parsed["length_spec"],
+                        option_detail=(parsed["option_detail"] or form.cleaned_data.get("option_detail") or "") if parsed["delivery_type"] == "finished" else "",
+                        memo=form.cleaned_data.get("memo") or "",
+                    )
+                    if index == 0 and form.cleaned_data.get("order_image"):
+                        order.order_image = form.cleaned_data["order_image"]
+                    elif image_name:
+                        order.order_image = image_name
+                    order.save()
+                    image_name = order.order_image.name or image_name
+            messages.success(request, f"빠른 주문 {len(parsed_lines)}건을 등록했습니다.")
+        else:
+            form.save()
+            messages.success(request, "주문 1건을 등록했습니다.")
+        if request.POST.get("next") == "dashboard":
+            return redirect("erp:dashboard")
+        return redirect("erp:order_list")
+    return render(request, "erp/form.html", {"form": form, "title": "주문 등록", "description": "거래처와 상품, 금액을 입력합니다."})
+
+
+@require_POST
+def order_complete(request, pk):
+    order = get_object_or_404(Order, pk=pk, is_deleted=False)
+    order.fulfilled_quantity = order.quantity
+    order.status = "done"
+    order.completed_at = timezone.localdate()
+    order.save(update_fields=["fulfilled_quantity", "status", "completed_at"])
+    messages.success(request, f"주문 품목 {order.model_number}을(를) 완료 처리했습니다.")
+    return redirect("erp:order_list")
+
+
+def order_edit(request, pk):
+    order = get_object_or_404(Order, pk=pk, is_deleted=False)
+    form = OrderForm(request.POST or None, request.FILES or None, instance=order)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        messages.success(request, f"주문 {order.transaction_no}을(를) 수정했습니다.")
+        return redirect("erp:order_list")
+    return render(request, "erp/form.html", {
+        "form": form, "title": "주문 수정", "description": f"주문번호 {order.transaction_no}",
+    })
+
+
+@require_POST
+def order_bulk_action(request):
+    order_ids = [value for value in request.POST.getlist("order_ids") if value.isdigit()]
+    action = request.POST.get("action")
+    orders = Order.objects.filter(pk__in=order_ids, is_deleted=False)
+    if not order_ids:
+        messages.error(request, "처리할 주문을 선택하세요.")
+    elif action == "delete":
+        count = orders.update(is_deleted=True, deleted_at=timezone.now())
+        messages.success(request, f"주문 {count}건을 삭제 처리했습니다.")
+    elif action == "cancel":
+        count = orders.update(status="cancel", completed_at=None)
+        messages.success(request, f"주문 {count}건을 취소 처리했습니다.")
+    else:
+        messages.error(request, "올바른 처리 방법을 선택하세요.")
+    return redirect("erp:order_list")
+
+
+def sale_create(request):
+    header_form = SaleHeaderForm(request.POST or None, prefix="header")
+    line_formset = SaleLineFormSet(request.POST or None, prefix="lines")
+    if request.method == "POST" and header_form.is_valid() and line_formset.is_valid():
+        lines = [form.cleaned_data for form in line_formset if form.cleaned_data.get("model_number") and not form.cleaned_data.get("DELETE")]
+        customer = header_form.cleaned_data["customer"]
+        sale_date = header_form.cleaned_data["ordered_at"]
+        current_has_payment = any(line["entry_type"] == "payment" for line in lines)
+        first_sale_after_payment_date = sale_date if current_has_payment else None
+        if not current_has_payment:
+            latest_payment = (
+                SaleItem.objects.filter(
+                    transaction__customer=customer, transaction__status__in=("new", "done"),
+                    transaction__sale_date__lte=sale_date, entry_type="payment", is_deleted=False,
+                ).select_related("transaction")
+                .order_by("-transaction__sale_date", "-transaction_id", "-id").first()
+            )
+            if latest_payment:
+                later_sale_exists = SaleItem.objects.filter(
+                    transaction__customer=customer, transaction__status__in=("new", "done"),
+                    transaction__sale_date__lte=sale_date, entry_type="sale", is_deleted=False,
+                ).filter(
+                    Q(transaction__sale_date__gt=latest_payment.transaction.sale_date)
+                    | Q(transaction__sale_date=latest_payment.transaction.sale_date, transaction_id__gt=latest_payment.transaction_id)
+                ).exists()
+                if not later_sale_exists:
+                    first_sale_after_payment_date = latest_payment.transaction.sale_date
+        first_sale_note_applied = False
+        for line in lines:
+            if line.get("loss_rate") is None:
+                product = line.get("catalog_product")
+                if product and product.default_loss_rate is not None:
+                    line["loss_rate"] = product.default_loss_rate
+                elif customer.default_loss_rate is not None:
+                    line["loss_rate"] = customer.default_loss_rate
+                else:
+                    line["loss_rate"] = line["material"].default_loss_rate
+            if not line.get("memo"):
+                if line["entry_type"] == "payment":
+                    line["memo"] = f"결제일: {sale_date:%Y-%m-%d}"
+                elif line["entry_type"] == "sale" and first_sale_after_payment_date and not first_sale_note_applied:
+                    line["memo"] = f"직전 결제일: {first_sale_after_payment_date:%Y-%m-%d}"
+                    first_sale_note_applied = True
+        if not header_form.errors:
+            with transaction.atomic():
+                sale = SaleTransaction.objects.create(
+                    transaction_no=generate_transaction_no(header_form.cleaned_data["ordered_at"]),
+                    customer=header_form.cleaned_data["customer"], sale_date=header_form.cleaned_data["ordered_at"],
+                    status=header_form.cleaned_data["status"], memo=header_form.cleaned_data.get("memo", ""),
+                )
+                for line in lines:
+                    item = SaleItem.objects.create(
+                        transaction=sale, entry_type=line["entry_type"], product=line.get("catalog_product"), model_number=line["model_number"].strip(),
+                        material=line["material"], color=line.get("color"), weight=line["weight"],
+                        settlement_weight=line.get("settlement_weight"), loss_rate=line.get("loss_rate") or 0,
+                        quantity=line["quantity"], unit_price=line["unit_price"],
+                        labor_amount=0, memo=line.get("memo") or "",
+                    )
+                    if item.entry_type == "sale":
+                        fulfill_matching_orders(sale.customer, item.model_number, item.quantity, sale.sale_date)
+                sale.refresh_totals()
+            messages.success(request, f"거래번호 {sale.transaction_no}로 제품 {len(lines)}건을 등록했습니다.")
+            if request.POST.get("_popup") == "1":
+                return render(request, "erp/sale_saved.html", {"sale": sale})
+            return redirect("erp:sales_list")
+    product_defaults = [{
+        "id": product.id, "model_number": product.code, "name": product.name,
+        "material_id": product.material_id,
+        "color_id": product.color_id,
+        "weight": str(product.default_weight or ""), "unit_price": str(product.unit_price),
+        "loss_rate": str(product.default_loss_rate) if product.default_loss_rate is not None else None,
+        "image_url": product.image.url if product.image else "",
+        "aliases": list(product.aliases.values_list("alias", flat=True)),
+        "weight_profiles": [{
+            "material_id": profile.material_id, "color_id": profile.color_id,
+            "weight": str(profile.average_weight), "sale_samples": profile.sale_sample_count,
+            "purchase_samples": profile.purchase_sample_count,
+        } for profile in product.weight_profiles.all()],
+    } for product in Product.objects.filter(active=True).prefetch_related("aliases", "weight_profiles")]
+    material_defaults = [{
+        "id": material.id, "name": material.name, "loss_rate": str(material.default_loss_rate),
+        "purity_rate": str(material.purity_rate), "apply_loss_rate": material.apply_loss_rate,
+        "payment_material": material.name.strip().upper() == "24K",
+    } for material in Material.objects.filter(active=True)]
+    return render(request, "erp/sale_form.html", {
+        "header_form": header_form, "line_formset": line_formset,
+        "product_defaults": product_defaults, "material_defaults": material_defaults,
+        "customer_defaults": list(Customer.objects.filter(customer_type="sales").values("id", "name")),
+    })
+
+
+def receivables_list(request):
+    rows = {}
+    for sale in SaleTransaction.objects.exclude(status="cancel").select_related("customer"):
+        row = rows.setdefault(sale.customer_id, {
+            "customer": sale.customer, "sales": [], "transactions": 0,
+        })
+        row["sales"].append(sale)
+        row["transactions"] += 1
+    for row in rows.values():
+        row.update(customer_receivable_totals(row.pop("sales")))
+        row["gold_negative"] = row["gold_receivable"] < 0
+        row["labor_negative"] = row["labor_receivable"] < 0
+        customer_sales = SaleTransaction.objects.exclude(status="cancel").filter(customer=row["customer"])
+        row["recent_transaction_date"] = customer_sales.order_by("-sale_date", "-id").values_list("sale_date", flat=True).first()
+        row["recent_payment_date"] = customer_sales.filter(items__entry_type="payment").order_by("-sale_date", "-id").values_list("sale_date", flat=True).first()
+    receivables = sorted(
+        (
+            row for row in rows.values()
+            if row["gold_receivable"] != 0 or row["labor_receivable"] != 0
+        ),
+        key=lambda row: row["customer"].name,
+    )
+    totals = {key: sum((row[key] for row in receivables), Decimal("0")) for key in ("gold_receivable", "cash_receivable", "labor_receivable")}
+    totals["gold_negative"] = totals["gold_receivable"] < 0
+    totals["labor_negative"] = totals["labor_receivable"] < 0
+    return render(request, "erp/receivables_list.html", {"receivables": receivables, "totals": totals})
+
+
+def customer_sales_summary(request, pk):
+    customer = get_object_or_404(Customer, pk=pk, customer_type="sales")
+    sales = SaleTransaction.objects.exclude(status="cancel").filter(customer=customer)
+    balances = customer_receivable_totals(sales)
+    recent_transaction_date = sales.order_by("-sale_date", "-id").values_list("sale_date", flat=True).first()
+    recent_payment_date = sales.filter(items__entry_type="payment").order_by("-sale_date", "-id").values_list("sale_date", flat=True).first()
+    return JsonResponse({
+        "customer_id": customer.pk,
+        "default_loss_rate": str(customer.default_loss_rate) if customer.default_loss_rate is not None else None,
+        "gold_receivable": str(balances["gold_receivable"]),
+        "labor_receivable": str(balances["labor_receivable"]),
+        "recent_transaction_date": recent_transaction_date.isoformat() if recent_transaction_date else None,
+        "recent_payment_date": recent_payment_date.isoformat() if recent_payment_date else None,
+    })
+
+
+def customer_sales_history(request, pk):
+    customer = get_object_or_404(Customer, pk=pk, customer_type="sales")
+    selected_date = parse_date(request.GET.get("date", "")) or timezone.localdate()
+    items = SaleItem.objects.exclude(transaction__status="cancel").filter(
+        transaction__customer=customer,
+        transaction__sale_date__lte=selected_date,
+        is_deleted=False,
+    ).select_related("transaction", "material").order_by(
+        "-transaction__sale_date", "-transaction_id", "-id",
+    )[:8]
+    return JsonResponse({"results": [{
+        "date": item.transaction.sale_date.strftime("%y-%m-%d"),
+        "transaction_no": item.transaction.transaction_no,
+        "entry_type": item.get_entry_type_display(),
+        "model_number": item.model_number,
+        "material": item.material.name if item.material else "-",
+        "weight": str(item.total_weight),
+        "pure_weight": str(item.pure_gold_weight),
+        "quantity": item.quantity,
+        "labor": str(item.total_amount),
+        "memo": item.memo,
+    } for item in items]})
+
+
+def customer_ledger(request, pk):
+    customer = get_object_or_404(Customer, pk=pk, customer_type="sales")
+    today = timezone.localdate()
+    start_date = parse_date(request.GET.get("start_date", "")) or (today - timedelta(days=30))
+    end_date = parse_date(request.GET.get("end_date", "")) or today
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+    items = SaleItem.objects.exclude(transaction__status="cancel").filter(
+        transaction__customer=customer,
+        is_deleted=False,
+    ).select_related("transaction", "material").order_by("transaction__sale_date", "transaction_id", "id")
+    gold_balance = Decimal("0")
+    labor_balance = Decimal("0")
+    ledger = []
+    for item in items:
+        direction = Decimal("1") if item.entry_type == "sale" else Decimal("-1")
+        gold_delta = item.pure_gold_weight * direction
+        labor_delta = item.total_amount * direction
+        gold_balance += gold_delta
+        labor_balance += labor_delta
+        if start_date <= item.transaction.sale_date <= end_date:
+            ledger.append({
+                "item": item, "gold_delta": gold_delta, "labor_delta": labor_delta,
+                "gold_balance": gold_balance, "labor_balance": labor_balance,
+            })
+    return render(request, "erp/customer_ledger.html", {
+        "customer": customer, "ledger": reversed(ledger),
+        "gold_balance": gold_balance, "labor_balance": labor_balance,
+        "start_date": start_date.isoformat(), "end_date": end_date.isoformat(),
+    })
+
+
+def product_search(request):
+    query = request.GET.get("q", "").strip()
+    products = Product.objects.filter(active=True)
+    if query:
+        products = products.filter(Q(code__icontains=query) | Q(name__icontains=query))
+    alias_ids = ProductAlias.objects.filter(alias__icontains=query).values_list("product_id", flat=True) if query else []
+    if query:
+        products = Product.objects.filter(Q(pk__in=alias_ids) | Q(code__icontains=query) | Q(name__icontains=query), active=True)
+    products = products.select_related("material", "color").prefetch_related("aliases", "weight_profiles")[:20]
+    return JsonResponse({"results": [{
+        "id": product.id, "model_number": product.code, "name": product.name,
+        "material_id": product.material_id, "material": product.material.name if product.material else "",
+        "color_id": product.color_id, "color": product.color.code if product.color else "",
+        "weight": str(product.default_weight or ""), "unit_price": str(product.unit_price),
+        "loss_rate": str(product.default_loss_rate) if product.default_loss_rate is not None else None,
+        "image_url": product.image.url if product.image else "",
+        "aliases": list(product.aliases.values_list("alias", flat=True)),
+        "weight_profiles": [{"material_id": p.material_id, "color_id": p.color_id, "weight": str(p.average_weight)} for p in product.weight_profiles.all()],
+    } for product in products]})
+
+
+def sales_list(request):
+    items = SaleItem.objects.exclude(transaction__status="cancel").select_related("transaction__customer", "product", "material", "color")
+    today_date = timezone.localdate()
+    if "start_date" not in request.GET and "end_date" not in request.GET:
+        display_date = (
+            items.filter(is_deleted=False)
+            .order_by("-transaction__sale_date")
+            .values_list("transaction__sale_date", flat=True)
+            .first()
+        ) or today_date
+        if items.filter(is_deleted=False, transaction__sale_date=today_date).exists():
+            display_date = today_date
+        start_date = end_date = display_date.isoformat()
+    else:
+        start_date = request.GET.get("start_date", "")
+        end_date = request.GET.get("end_date", "")
+    customer_id = request.GET.get("customer", "")
+    material_id = request.GET.get("material", "")
+    status = request.GET.get("status", "")
+    query = request.GET.get("q", "").strip()
+    sort = request.GET.get("sort", "latest")
+    page_size = request.GET.get("page_size", "30")
+    include_deleted = request.GET.get("include_deleted") == "1"
+    if parse_date(start_date):
+        items = items.filter(transaction__sale_date__gte=start_date)
+    if parse_date(end_date):
+        items = items.filter(transaction__sale_date__lte=end_date)
+    if customer_id.isdigit():
+        items = items.filter(transaction__customer_id=customer_id)
+    if material_id.isdigit():
+        items = items.filter(material_id=material_id)
+    if status in {"sale", "return", "payment"}:
+        items = items.filter(entry_type=status)
+    if query:
+        search = Q(transaction__customer__name__icontains=query) | Q(product__name__icontains=query) | Q(model_number__icontains=query) | Q(transaction__transaction_no__icontains=query) | Q(memo__icontains=query)
+        if query.isdigit():
+            search |= Q(transaction_id=int(query))
+        items = items.filter(search)
+
+    ordering = {
+        "latest": ("-transaction__sale_date", "-transaction_id", "id"),
+        "oldest": ("transaction__sale_date", "transaction_id", "id"),
+        "customer": ("transaction__customer__name", "-transaction__sale_date"),
+        "amount": ("-unit_price", "-transaction__sale_date"),
+    }
+    items = items.order_by(*ordering.get(sort, ordering["latest"]))
+
+    display_orders = list(items if include_deleted else items.filter(is_deleted=False))
+    summary_orders = list(items.filter(is_deleted=False))
+    seen_transactions = set()
+    for item in display_orders:
+        item.is_transaction_first = item.transaction_id not in seen_transactions
+        seen_transactions.add(item.transaction_id)
+    transaction_ids = {item.transaction_id for item in summary_orders}
+    summary_transactions = list(SaleTransaction.objects.filter(id__in=transaction_ids))
+    total_sales = sum((item.total_amount for item in summary_orders), Decimal("0"))
+    total_paid = sum((sale.paid_labor_amount for sale in summary_transactions), Decimal("0"))
+    total_unpaid = sum((sale.labor_receivable for sale in summary_transactions), Decimal("0"))
+    total_quantity = sum((order.quantity for order in summary_orders), 0)
+    total_weight = sum((order.total_weight for order in summary_orders), Decimal("0"))
+    total_pure_weight = sum((order.pure_gold_weight for order in summary_orders), Decimal("0"))
+    total_gold_receivable = sum((sale.gold_receivable for sale in summary_transactions), Decimal("0"))
+    total_labor = sum((sale.total_labor_amount for sale in summary_transactions), Decimal("0"))
+    total_paid_labor = sum((sale.paid_labor_amount for sale in summary_transactions), Decimal("0"))
+    total_unpaid_labor = sum((sale.labor_receivable for sale in summary_transactions), Decimal("0"))
+    entry_type_summary = {
+        "sale": {
+            "label": "판매", "quantity": sum((item.quantity for item in summary_orders if item.entry_type == "sale"), 0),
+            "weight": sum((item.total_weight for item in summary_orders if item.entry_type == "sale"), Decimal("0")),
+            "pure_weight": sum((item.pure_gold_weight for item in summary_orders if item.entry_type == "sale"), Decimal("0")),
+            "labor": sum((item.total_amount for item in summary_orders if item.entry_type == "sale"), Decimal("0")),
+        },
+        "payment": {
+            "label": "결제", "quantity": sum((item.quantity for item in summary_orders if item.entry_type == "payment"), 0),
+            "weight": sum((item.total_weight for item in summary_orders if item.entry_type == "payment"), Decimal("0")),
+            "pure_weight": sum((item.pure_gold_weight for item in summary_orders if item.entry_type == "payment"), Decimal("0")),
+            "labor": sum((item.total_amount for item in summary_orders if item.entry_type == "payment"), Decimal("0")),
+        },
+        "return": {
+            "label": "반품", "quantity": sum((item.quantity for item in summary_orders if item.entry_type == "return"), 0),
+            "weight": sum((item.total_weight for item in summary_orders if item.entry_type == "return"), Decimal("0")),
+            "pure_weight": sum((item.pure_gold_weight for item in summary_orders if item.entry_type == "return"), Decimal("0")),
+            "labor": sum((item.total_amount for item in summary_orders if item.entry_type == "return"), Decimal("0")),
+        },
+    }
+    net_sales_pure = entry_type_summary["sale"]["pure_weight"] - entry_type_summary["return"]["pure_weight"]
+    net_sales_labor = entry_type_summary["sale"]["labor"] - entry_type_summary["return"]["labor"]
+    receivable_pure = net_sales_pure - entry_type_summary["payment"]["pure_weight"]
+    receivable_labor = net_sales_labor - entry_type_summary["payment"]["labor"]
+    material_totals = {}
+    for order in summary_orders:
+        if order.entry_type == "payment":
+            continue
+        direction = Decimal("1") if order.entry_type == "sale" else Decimal("-1")
+        name = order.material.name if order.material else "미지정"
+        row = material_totals.setdefault(name, {"name": name, "pure_weight": Decimal("0"), "labor": Decimal("0")})
+        row["pure_weight"] += order.pure_gold_weight * direction
+        row["labor"] += order.total_amount * direction
+    material_total_pure_weight = sum((row["pure_weight"] for row in material_totals.values()), Decimal("0"))
+    material_total_labor = sum((row["labor"] for row in material_totals.values()), Decimal("0"))
+    if page_size not in {"30", "50", "100"}:
+        page_size = "30"
+    page_obj = Paginator(display_orders, int(page_size)).get_page(request.GET.get("page"))
+    return render(request, "erp/sales_list.html", {
+        "items": page_obj.object_list, "page_obj": page_obj,
+        "customers": Customer.objects.filter(customer_type="sales"), "materials": Material.objects.filter(active=True),
+        "start_date": start_date, "end_date": end_date, "selected_customer": customer_id,
+        "selected_material": material_id, "selected_status": status, "query": query, "selected_sort": sort, "page_size": page_size,
+        "total_sales": total_sales, "total_paid": total_paid, "total_unpaid": total_unpaid,
+        "total_quantity": total_quantity, "total_weight": total_weight, "total_pure_weight": total_pure_weight,
+        "total_gold_receivable": total_gold_receivable,
+        "total_labor": total_labor, "total_paid_labor": total_paid_labor, "total_unpaid_labor": total_unpaid_labor,
+        "material_summary": material_totals.values(), "result_count": len(display_orders),
+        "material_total_pure_weight": material_total_pure_weight, "material_total_labor": material_total_labor,
+        "net_sales_pure": net_sales_pure, "net_sales_labor": net_sales_labor,
+        "receivable_pure": receivable_pure, "receivable_labor": receivable_labor,
+        "entry_type_summary": entry_type_summary.values(), "include_deleted": include_deleted,
+    })
+
+
+def sale_transaction_detail(request, pk):
+    sale = get_object_or_404(
+        SaleTransaction.objects.select_related("customer"), pk=pk
+    )
+    items = list(
+        sale.items.filter(is_deleted=False)
+        .select_related("product", "material", "color")
+        .order_by("id")
+    )
+    image_products = Product.objects.exclude(image="").prefetch_related("aliases")
+    image_by_model = {}
+    for product in image_products:
+        image_by_model[product.code.strip().casefold()] = product.image
+        for alias in product.aliases.all():
+            image_by_model[alias.alias.strip().casefold()] = product.image
+    for item in items:
+        item.statement_image = (
+            item.product.image
+            if item.product_id and item.product.image
+            else image_by_model.get(item.model_number.strip().casefold())
+        )
+    prior_sales = SaleTransaction.objects.exclude(status="cancel").filter(customer=sale.customer).filter(
+        Q(sale_date__lt=sale.sale_date) | Q(sale_date=sale.sale_date, id__lt=sale.id)
+    )
+    prior = customer_receivable_totals(prior_sales)
+    to_don = lambda value: (Decimal(value) / Decimal("3.75")).quantize(Decimal("0.001"))
+    current = {
+        entry_type: {
+            "gold": sum((item.pure_gold_weight for item in items if item.entry_type == entry_type), Decimal("0")),
+            "labor": sum((item.total_amount for item in items if item.entry_type == entry_type), Decimal("0")),
+            "quantity": sum((item.quantity for item in items if item.entry_type == entry_type), 0),
+        }
+        for entry_type in ("sale", "return", "payment")
+    }
+    for row in current.values():
+        row["don"] = to_don(row["gold"])
+    after = {
+        "gold_receivable": prior["gold_receivable"] + current["sale"]["gold"] - current["return"]["gold"] - current["payment"]["gold"],
+        "labor_receivable": prior["labor_receivable"] + current["sale"]["labor"] - current["return"]["labor"] - current["payment"]["labor"],
+    }
+    prior["gold_don"] = to_don(prior["gold_receivable"])
+    after["gold_don"] = to_don(after["gold_receivable"])
+    recent_payment_item = (
+        SaleItem.objects.filter(transaction__in=prior_sales, entry_type="payment", is_deleted=False)
+        .select_related("transaction").order_by("-transaction__sale_date", "-transaction_id", "-id").first()
+    )
+    if recent_payment_item:
+        recent_payment_items = SaleItem.objects.filter(
+            transaction=recent_payment_item.transaction, entry_type="payment", is_deleted=False
+        )
+        recent_payment = {
+            "date": recent_payment_item.transaction.sale_date,
+            "gold": sum((item.pure_gold_weight for item in recent_payment_items), Decimal("0")),
+            "labor": sum((item.total_amount for item in recent_payment_items), Decimal("0")),
+        }
+    else:
+        recent_payment = {"date": None, "gold": Decimal("0"), "labor": Decimal("0")}
+    recent_payment["don"] = to_don(recent_payment["gold"])
+    net_current = {
+        "gold": current["sale"]["gold"] - current["return"]["gold"],
+        "quantity": current["sale"]["quantity"] - current["return"]["quantity"],
+        "labor": current["sale"]["labor"] - current["return"]["labor"],
+    }
+    material_net_weights = {}
+    for material_name in ("14K", "18K", "24K"):
+        sold_weight = sum((item.total_weight for item in items if item.entry_type == "sale" and item.material and item.material.name.upper() == material_name), Decimal("0"))
+        returned_weight = sum((item.total_weight for item in items if item.entry_type == "return" and item.material and item.material.name.upper() == material_name), Decimal("0"))
+        material_net_weights[material_name] = sold_weight - returned_weight
+    company_profile = CompanyProfile.objects.first() or CompanyProfile()
+    return render(request, "erp/sale_transaction_detail.html", {
+        "sale": sale,
+        "items": items,
+        "empty_rows": range(max(0, 10 - len(items))),
+        "copies": (1, 2),
+        "prior": prior,
+        "current": current,
+        "after": after,
+        "recent_payment": recent_payment,
+        "net_current": net_current,
+        "material_net_weights": material_net_weights,
+        "company_profile": company_profile,
+        "statement_supplier_name": sale.customer.supplier_name_override or company_profile.supplier_name,
+    })
+
+
+def normalized_posted_ids(values):
+    """Return integer IDs even if display localization inserted thousands separators."""
+    normalized = []
+    for value in values:
+        compact = str(value).replace(",", "").strip()
+        if compact.isdigit():
+            normalized.append(int(compact))
+    return normalized
+
+
+@require_POST
+def sales_soft_delete(request):
+    item_ids = normalized_posted_ids(request.POST.getlist("order_ids"))
+    items = list(SaleItem.objects.filter(id__in=item_ids, is_deleted=False).select_related("transaction"))
+    if not items:
+        messages.error(request, "삭제할 판매 품목을 선택하세요.")
+        return redirect("erp:sales_list")
+    transactions = {item.transaction for item in items}
+    with transaction.atomic():
+        SaleItem.objects.filter(id__in=[item.id for item in items]).update(is_deleted=True)
+        for sale in transactions:
+            sale.refresh_totals()
+    messages.success(request, f"선택한 판매 품목 {len(items)}건을 삭제 처리했습니다.")
+    return redirect("erp:sales_list")
+
+
+@require_POST
+def sales_return(request):
+    item_ids = normalized_posted_ids(request.POST.getlist("order_ids"))
+    sale_items = list(
+        SaleItem.objects.filter(
+            id__in=item_ids, is_deleted=False, entry_type="sale",
+            transaction__status__in=("new", "done"),
+        ).select_related("transaction", "transaction__customer")
+    )
+    already_returned_ids = set(
+        SaleItem.objects.filter(
+            returned_from_id__in=[item.id for item in sale_items],
+            entry_type="return", is_deleted=False,
+        ).exclude(transaction__status="cancel").values_list("returned_from_id", flat=True)
+    )
+    eligible_items = [item for item in sale_items if item.id not in already_returned_ids]
+    if not eligible_items:
+        messages.error(request, "반품 가능한 판매 품목을 선택하세요. 결제·반품·삭제 품목이나 이미 반품된 품목은 처리할 수 없습니다.")
+        return redirect("erp:sales_list")
+
+    return_date = timezone.localdate()
+    transactions_by_customer = {}
+    with transaction.atomic():
+        for original in eligible_items:
+            return_transaction = transactions_by_customer.get(original.transaction.customer_id)
+            if return_transaction is None:
+                return_transaction = SaleTransaction.objects.create(
+                    transaction_no=generate_transaction_no(return_date),
+                    customer=original.transaction.customer,
+                    sale_date=return_date,
+                    status="new",
+                    memo="체크 품목 반품",
+                )
+                transactions_by_customer[original.transaction.customer_id] = return_transaction
+            reference = f"원거래 {original.transaction.transaction_no}"
+            memo = f"{reference} / {original.memo}" if original.memo else reference
+            SaleItem.objects.create(
+                transaction=return_transaction,
+                entry_type="return",
+                model_number=original.model_number,
+                product=original.product,
+                material=original.material,
+                color=original.color,
+                weight=original.weight,
+                settlement_weight=original.settlement_weight,
+                quantity=original.quantity,
+                sales_unit=original.sales_unit,
+                loss_rate=original.loss_rate,
+                unit_price=original.unit_price,
+                labor_amount=original.labor_amount,
+                labor_total_override=original.labor_total_override,
+                memo=memo[:200],
+                purchase_supplier=original.purchase_supplier,
+                purchase_loss_rate=original.purchase_loss_rate,
+                purchase_labor_amount=original.purchase_labor_amount,
+                returned_from=original,
+            )
+        for return_transaction in transactions_by_customer.values():
+            return_transaction.refresh_totals()
+
+    skipped = len(item_ids) - len(eligible_items)
+    message = f"판매 품목 {len(eligible_items)}건을 반품 처리했습니다."
+    if skipped > 0:
+        message += f" 처리할 수 없는 선택 {skipped}건은 제외했습니다."
+    messages.success(request, message)
+    return redirect("erp:sales_list")
+
+
+@require_POST
+def sales_merge(request):
+    item_ids = normalized_posted_ids(request.POST.getlist("order_ids"))
+    items = list(SaleItem.objects.select_related("transaction").filter(id__in=item_ids, is_deleted=False))
+    if len(items) < 2:
+        messages.error(request, "통합할 판매 품목을 2개 이상 선택하세요.")
+        return redirect("erp:sales_list")
+    transactions = {item.transaction for item in items}
+    if len({sale.customer_id for sale in transactions}) != 1:
+        messages.error(request, "같은 거래처의 판매만 통합할 수 있습니다.")
+        return redirect("erp:sales_list")
+    if any(sale.items.exclude(id__in=item_ids).exists() for sale in transactions):
+        messages.error(request, "거래번호 통합은 해당 거래의 모든 품목을 선택해야 합니다.")
+        return redirect("erp:sales_list")
+    with transaction.atomic():
+        target = min(transactions, key=lambda sale: sale.id)
+        for source in transactions - {target}:
+            target.paid_gold_weight += source.paid_gold_weight
+            target.paid_cash_amount += source.paid_cash_amount
+            target.paid_labor_amount += source.paid_labor_amount
+            source.items.update(transaction=target)
+            source.delete()
+        target.save()
+        target.refresh_totals()
+    messages.success(request, f"선택 품목을 거래번호 {target.transaction_no}로 통합했습니다.")
+    return redirect("erp:sales_list")
+
+
+@require_POST
+def sales_split(request):
+    item_ids = normalized_posted_ids(request.POST.getlist("order_ids"))
+    items = list(SaleItem.objects.select_related("transaction").filter(id__in=item_ids, is_deleted=False))
+    if not items:
+        messages.error(request, "분리할 판매 품목을 선택하세요.")
+        return redirect("erp:sales_list")
+    if any(item.transaction.paid_gold_weight or item.transaction.paid_cash_amount or item.transaction.paid_labor_amount for item in items):
+        messages.error(request, "결제 내역이 있는 거래는 결제 배분 문제로 분리할 수 없습니다.")
+        return redirect("erp:sales_list")
+    with transaction.atomic():
+        affected = {item.transaction for item in items}
+        for item in items:
+            original = item.transaction
+            split_sale = SaleTransaction.objects.create(transaction_no=generate_transaction_no(original.sale_date), customer=original.customer, sale_date=original.sale_date, status=original.status, memo=original.memo)
+            item.transaction = split_sale
+            item.save(update_fields=["transaction"])
+            split_sale.refresh_totals()
+        for sale in affected:
+            if sale.items.exists(): sale.refresh_totals()
+            else: sale.delete()
+    messages.success(request, f"선택한 {len(items)}개 품목을 각각 새 거래번호로 분리했습니다.")
+    return redirect("erp:sales_list")
+
+
+def customer_list(request):
+    query = request.GET.get("q", "").strip()
+    customers = Customer.objects.all()
+    if query:
+        customers = customers.filter(name__icontains=query)
+    return render(request, "erp/customer_list.html", {"customers": customers, "query": query, "create_form": CustomerForm()})
+
+
+def customer_lookup(request):
+    query = request.GET.get("q", "").strip()
+    target = request.GET.get("target", "sale")
+    customers = Customer.objects.filter(customer_type="sales")
+    if query:
+        customers = customers.filter(
+            Q(name__icontains=query) | Q(contact__icontains=query) |
+            Q(phone__icontains=query) | Q(aliases__alias__icontains=query)
+        ).distinct()
+    return render(request, "erp/customer_lookup.html", {
+        "customers": customers[:100], "query": query, "target": target,
+    })
+
+
+def customer_create(request):
+    form = CustomerForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("erp:customer_list")
+    return render(request, "erp/form.html", {"form": form, "title": "거래처 등록", "description": "거래처 기본 연락처를 등록합니다."})
+
+
+def customer_edit(request, pk):
+    customer = get_object_or_404(Customer, pk=pk)
+    form = CustomerForm(request.POST or None, instance=customer)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+    return redirect("erp:customer_list")
+
+
+def customer_delete(request, pk):
+    customer = get_object_or_404(Customer, pk=pk)
+    if request.method == "POST":
+        customer.delete()
+    return redirect("erp:customer_list")
+
+
+def product_list(request):
+    products = Product.objects.prefetch_related("aliases", "weight_profiles", "weight_profiles__material", "weight_profiles__color")
+    query = request.GET.get("q", "").strip()
+    material_id = request.GET.get("material", "")
+    include_deleted = request.GET.get("include_deleted") == "1"
+    if not include_deleted:
+        products = products.filter(is_deleted=False)
+    if query:
+        products = products.filter(
+            Q(code__icontains=query) | Q(name__icontains=query) | Q(aliases__alias__icontains=query)
+        ).distinct()
+    if material_id.isdigit():
+        products = products.filter(Q(material_id=material_id) | Q(weight_profiles__material_id=material_id)).distinct()
+    return render(request, "erp/product_list.html", {
+        "products": products, "create_form": ProductForm(), "query": query,
+        "materials": Material.objects.filter(active=True), "selected_material": material_id,
+        "include_deleted": include_deleted,
+    })
+
+
+def product_create(request):
+    form = ProductForm(request.POST or None, request.FILES or None)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("erp:product_list")
+    return render(request, "erp/form.html", {"form": form, "title": "상품 등록", "description": "판매 상품과 현재 재고를 등록합니다."})
+
+
+@require_POST
+def product_delete(request, pk):
+    product = get_object_or_404(Product, pk=pk, is_deleted=False)
+    product.is_deleted = True
+    product.deleted_at = timezone.now()
+    product.active = False
+    product.save(update_fields=["is_deleted", "deleted_at", "active"])
+    messages.success(request, f"{product.code} 상품을 삭제 처리했습니다.")
+    return redirect("erp:product_list")
+
+
+@require_POST
+def product_restore(request, pk):
+    product = get_object_or_404(Product, pk=pk, is_deleted=True)
+    product.is_deleted = False
+    product.deleted_at = None
+    product.active = True
+    product.save(update_fields=["is_deleted", "deleted_at", "active"])
+    messages.success(request, f"{product.code} 상품을 복구했습니다.")
+    return redirect(f"{reverse('erp:product_list')}?include_deleted=1")
+
+
+@require_POST
+def product_catalog_refresh(request):
+    result = rebuild_product_weight_profiles()
+    messages.success(
+        request,
+        f"평균중량을 갱신했습니다. 판매 {result['sale_rows']}건 · 매입 {result['purchase_rows']}건 · 평균 {result['profiles']}개",
+    )
+    return redirect("erp:product_list")
+
+
+@master_reauthentication_required
+def material_list(request):
+    form = MaterialForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        messages.success(request, "재질을 추가했습니다.")
+        return redirect("erp:material_list")
+    return render(request, "erp/material_list.html", {
+        "materials": Material.objects.all(), "form": form,
+        "colors": ProductColor.objects.all(), "color_form": ProductColorForm(),
+        "company_form": CompanyProfileForm(instance=CompanyProfile.objects.first() or CompanyProfile()),
+    })
+
+
+@require_POST
+@master_reauthentication_required
+def company_profile_edit(request):
+    profile = CompanyProfile.objects.first() or CompanyProfile()
+    form = CompanyProfileForm(request.POST, instance=profile)
+    if form.is_valid():
+        form.save()
+        messages.success(request, "명세서 공급자 정보를 수정했습니다.")
+    else:
+        messages.error(request, "공급자 정보를 확인해 주세요.")
+    return redirect("erp:material_list")
+
+
+@require_POST
+@master_reauthentication_required
+def material_edit(request, pk):
+    material = get_object_or_404(Material, pk=pk)
+    form = MaterialForm(request.POST, instance=material)
+    if form.is_valid():
+        form.save()
+        messages.success(request, f"{material.name} 재질을 수정했습니다.")
+    else:
+        messages.error(request, "재질 정보를 확인해 주세요.")
+    return redirect("erp:material_list")
+
+
+@require_POST
+@master_reauthentication_required
+def color_create(request):
+    form = ProductColorForm(request.POST)
+    if form.is_valid():
+        form.save()
+        messages.success(request, "색상을 추가했습니다.")
+    else:
+        messages.error(request, "색상 정보를 확인해 주세요.")
+    return redirect("erp:material_list")
+
+
+@require_POST
+@master_reauthentication_required
+def color_edit(request, pk):
+    color = get_object_or_404(ProductColor, pk=pk)
+    form = ProductColorForm(request.POST, instance=color)
+    if form.is_valid():
+        form.save()
+        messages.success(request, f"{color.code} 색상을 수정했습니다.")
+    else:
+        messages.error(request, "색상 정보를 확인해 주세요.")
+    return redirect("erp:material_list")

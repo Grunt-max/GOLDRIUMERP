@@ -1,0 +1,52 @@
+{% extends 'erp/base.html' %}{% load erp_numbers l10n %}
+{% block title %}판매 관리{% endblock %}
+{% block content %}
+<div class="legacy-sales">
+  <div class="legacy-title">판매관리</div>
+  <form method="get" class="legacy-search">
+    <div class="legacy-selects">
+      <select name="customer"><option value="">거래처구분</option>{% for customer in customers %}<option value="{{ customer.id }}" {% if selected_customer == customer.id|stringformat:'s' %}selected{% endif %}>{{ customer.name }}</option>{% endfor %}</select>
+      <select name="status"><option value="">거래구분</option><option value="sale" {% if selected_status == 'sale' %}selected{% endif %}>판매</option><option value="return" {% if selected_status == 'return' %}selected{% endif %}>반품</option><option value="payment" {% if selected_status == 'payment' %}selected{% endif %}>결제</option></select>
+      <select name="material"><option value="">재질구분</option>{% for material in materials %}<option value="{{ material.id }}" {% if selected_material == material.id|stringformat:'s' %}selected{% endif %}>{{ material.name }}</option>{% endfor %}</select>
+      <select disabled><option>부가세</option></select>
+      <select disabled><option>거래형태</option></select>
+      <select name="sort"><option value="latest" {% if selected_sort == 'latest' %}selected{% endif %}>작성일순</option><option value="oldest" {% if selected_sort == 'oldest' %}selected{% endif %}>과거일순</option><option value="customer" {% if selected_sort == 'customer' %}selected{% endif %}>거래처순</option><option value="amount" {% if selected_sort == 'amount' %}selected{% endif %}>금액순</option></select>
+      <a class="mini-stat popup-link" href="{% url 'erp:receivables_list' %}">미수현황</a><button type="button" class="mini-stat">▥</button><button type="button" class="mini-stat">▥</button>
+      <button type="button" class="mini-xls">xls</button>
+    </div>
+    <div class="legacy-query-row">
+      <div class="legacy-date-group"><b>거래일</b><input type="date" name="start_date" value="{{ start_date }}"><span>~</span><input type="date" name="end_date" value="{{ end_date }}"></div>
+      <div class="legacy-search-group"><input type="search" name="q" value="{{ query }}" placeholder="거래처·모델·거래번호"><select name="page_size"><option value="30" {% if page_size == '30' %}selected{% endif %}>30줄</option><option value="50" {% if page_size == '50' %}selected{% endif %}>50줄</option><option value="100" {% if page_size == '100' %}selected{% endif %}>100줄</option></select><button type="submit" class="legacy-find">🔍 검색</button></div>
+      <div class="legacy-command-group"><a class="legacy-refresh" href="{% url 'erp:sales_list' %}">⟳ 새로고침</a><a class="legacy-write" href="{% url 'erp:sale_create' %}" target="erp-sale-entry" onclick="if(matchMedia('(max-width:700px)').matches){location.href=this.href}else{window.open(this.href,this.target,'width=1500,height=850,scrollbars=yes,resizable=yes')}return false">✎ 자료등록</a></div>
+      <label class="include-deleted"><input type="checkbox" name="include_deleted" value="1" {% if include_deleted %}checked{% endif %}> 삭제 포함</label>
+    </div>
+    <div class="legacy-result">총 <b>{{ result_count|erp_number:0 }}</b>건 · 총 <b>{{ total_quantity|erp_quantity }}</b>개 · {{ page_obj.number }} / {{ page_obj.paginator.num_pages }} 페이지</div>
+  </form>
+
+  <form method="post" class="legacy-ledger">{% csrf_token %}
+    <div class="legacy-table-wrap"><table class="legacy-table">
+      <colgroup><col class="col-no"><col class="col-check"><col class="col-date"><col class="col-state"><col class="col-customer"><col class="col-transaction"><col class="col-model"><col class="col-material"><col class="col-color"><col class="col-memo"><col class="col-quantity"><col class="col-pure"><col class="col-price"><col class="col-total"></colgroup>
+      <thead>
+        <tr><th>No</th><th><input type="checkbox" data-check-all></th><th>일자</th><th>상태</th><th>거래처</th><th>거래<br>NO</th><th>모델번호</th><th>재질</th><th>색상</th><th>비고사항</th><th>수량</th><th>순금환산(g)</th><th>단가<br>(공임)</th><th>공임합계</th></tr>
+      </thead>
+      <tbody>{% for order in items %}<tr class="{% if order.is_deleted %}deleted-row{% elif order.entry_type == 'payment' %}payment-row{% elif order.entry_type == 'return' %}return-row{% endif %}">
+        <td>{{ forloop.counter }}</td><td><input type="checkbox" name="order_ids" value="{{ order.id|unlocalize }}"></td><td><a href="#">{{ order.transaction.sale_date|date:'y-m-d' }}</a></td><td class="entry-type-{{ order.entry_type }}">{{ order.get_entry_type_display }}{% if order.is_deleted %}<small class="deleted-mark">삭제</small>{% endif %}</td><td class="legacy-customer">{{ order.transaction.customer }}</td><td class="legacy-no"><a class="transaction-detail-link" href="{% url 'erp:sale_transaction_detail' order.transaction_id %}" target="sale-detail-{{ order.transaction_id|unlocalize }}" onclick="window.open(this.href,this.target,'width=1180,height=820,scrollbars=yes,resizable=yes');return false">{{ order.transaction.transaction_no }}</a></td><td class="legacy-model" title="{{ order.model_number }}"><span class="desktop-sale-model">{{ order.model_number }}</span><div class="mobile-sale-product-table"><span><small>판매 제품명</small><b>{{ order.model_number|default:'-' }}</b></span><span><small>재질</small><b>{{ order.material|default:'-' }}</b></span><span><small>색상</small><b>{{ order.color.code|default:'-' }}</b></span><span><small>수량</small><b>{{ order.quantity|erp_quantity }}</b></span><span><small>중량(환산 전)</small><b>{% if order.settlement_weight is not None %}{{ order.settlement_weight|erp_number:weight_decimal_places }}{% else %}{{ order.weight|erp_number:weight_decimal_places }}{% endif %}g</b></span><span><small>환산 중량</small><b>{{ order.pure_gold_weight|erp_number:weight_decimal_places }}g</b></span></div></td><td class="{% if order.material.name|upper == '14K' %}material-14k{% elif order.material.name|upper == '18K' %}material-18k{% endif %}">{{ order.material|default:'-' }}</td><td>{{ order.color.code|default:'-' }}</td><td class="legacy-memo" title="{{ order.memo }}">{{ order.memo|default:'-'|truncatechars:28 }}</td><td class="num">{{ order.quantity|erp_quantity }}</td><td class="num">{{ order.pure_gold_weight|erp_number:weight_decimal_places }}</td><td class="num">{{ order.unit_price|erp_number:0 }}</td><td class="num">{{ order.total_amount|erp_number:0 }}</td>
+      </tr>{% empty %}<tr><td colspan="14" class="empty">선택한 기간에 판매 내역이 없습니다.</td></tr>{% endfor %}</tbody>
+      <tfoot>
+        <tr><th colspan="11" class="sum-label">미수 증감(판매-반품-결제)</th><th class="num">{{ receivable_pure|erp_number:weight_decimal_places }}</th><th></th><th class="num">{{ receivable_labor|erp_number:0 }}</th></tr>
+      </tfoot>
+    </table></div>
+    <div class="legacy-actions"><b>✓ 체크된 것</b><button type="submit" formaction="{% url 'erp:sales_split' %}">거래번호 분리</button><button type="submit" formaction="{% url 'erp:sales_merge' %}">거래번호 통합</button><button type="button">거래처 변경</button><button type="button">거래구분 변경</button><button type="button">거래일 변경</button><button type="button">명세표 출력</button><button type="submit" class="return-button" formaction="{% url 'erp:sales_return' %}" onclick="return confirm('선택한 판매 품목을 오늘 날짜로 반품 처리할까요?')">반품</button><button type="submit" class="soft-delete-button" formaction="{% url 'erp:sales_soft_delete' %}" onclick="return confirm('선택한 판매 자료를 삭제 처리할까요?')">삭제</button></div>
+  </form>
+
+  {% if page_obj.paginator.num_pages > 1 %}<nav class="legacy-pagination">
+    {% if page_obj.has_previous %}<a href="?page={{ page_obj.previous_page_number }}&start_date={{ start_date }}&end_date={{ end_date }}&customer={{ selected_customer }}&material={{ selected_material }}&status={{ selected_status }}&sort={{ selected_sort }}&page_size={{ page_size }}&q={{ query|urlencode }}{% if include_deleted %}&include_deleted=1{% endif %}">‹</a>{% endif %}<b>{{ page_obj.number }}</b>{% if page_obj.has_next %}<a href="?page={{ page_obj.next_page_number }}&start_date={{ start_date }}&end_date={{ end_date }}&customer={{ selected_customer }}&material={{ selected_material }}&status={{ selected_status }}&sort={{ selected_sort }}&page_size={{ page_size }}&q={{ query|urlencode }}{% if include_deleted %}&include_deleted=1{% endif %}">›</a>{% endif %}
+  </nav>{% endif %}
+
+  <div class="legacy-bottom-grid">
+    <section><h3>거래구분별 합계</h3><table class="legacy-summary-table entry-summary"><thead><tr><th>상태</th><th>순금환산(g)</th><th>공임합계</th></tr></thead><tbody>{% for row in entry_type_summary %}<tr class="{% if row.label == '판매' %}summary-sale{% elif row.label == '결제' %}summary-payment{% elif row.label == '반품' %}summary-return{% endif %}"><th>{{ row.label }}</th><td>{{ row.pure_weight|erp_number:weight_decimal_places }}</td><td>{{ row.labor|erp_number:0 }}</td></tr>{% endfor %}<tr class="summary-total"><th>순매출(판매-반품)</th><td>{{ net_sales_pure|erp_number:weight_decimal_places }}</td><td>{{ net_sales_labor|erp_number:0 }}</td></tr><tr class="summary-receivable"><th>미수(판매-반품-결제)</th><td>{{ receivable_pure|erp_number:weight_decimal_places }}</td><td>{{ receivable_labor|erp_number:0 }}</td></tr></tbody></table></section>
+    <section><h3>재질별 순금환산 및 공임 (판매 - 반품)</h3><table class="legacy-summary-table material-summary"><thead><tr><th>재질</th><th>순금환산(g)</th><th>공임합계</th></tr></thead><tbody>{% for row in material_summary %}<tr class="{% if row.name|upper == '14K' %}summary-14k{% elif row.name|upper == '18K' %}summary-18k{% endif %}"><th>{{ row.name }}</th><td>{{ row.pure_weight|erp_number:weight_decimal_places }}</td><td>{{ row.labor|erp_number:0 }}</td></tr>{% empty %}<tr><td colspan="3">판매·반품 자료 없음</td></tr>{% endfor %}<tr class="summary-total"><th>합계</th><td>{{ material_total_pure_weight|erp_number:weight_decimal_places }}</td><td>{{ material_total_labor|erp_number:0 }}</td></tr></tbody></table></section>
+  </div>
+</div>
+<script>document.querySelector('[data-check-all]')?.addEventListener('change',e=>document.querySelectorAll('input[name="order_ids"]').forEach(box=>box.checked=e.target.checked));</script>
+{% endblock %}

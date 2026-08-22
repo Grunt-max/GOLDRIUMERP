@@ -1,0 +1,22 @@
+{% load static %}
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>거래 명세표 {{ sale.transaction_no }}</title><link rel="stylesheet" href="{% static 'erp/transaction_print.css' %}"></head><body>
+<div class="print-actions"><button type="button" onclick="window.print()">인쇄</button><button type="button" onclick="window.close()">닫기</button></div>
+<main class="statement-page">
+{% for copy in copies %}<section class="statement-copy">
+  <h1>[{{ sale.customer.name }}] 거래 명세서</h1>
+  <div class="statement-meta"><div><b>일자:</b> {{ sale.sale_date|date:'Y.m.d' }}<br><b>N o:</b> {{ sale.transaction_no }}<br><b>시세:</b></div><div><b>거래처:</b> {{ sale.customer.name }}<span><b>공급자:</b> {{ statement_supplier_name }}</span><br><b>전&nbsp;&nbsp;화:</b> {{ sale.customer.phone|default:'-' }}<span><b>전&nbsp;&nbsp;화:</b> {{ company_profile.supplier_phone|default:'-' }}</span><br><b>팩&nbsp;&nbsp;스:</b><span><b>팩&nbsp;&nbsp;스:</b></span></div></div>
+  <table class="item-table"><colgroup><col class="c-no"><col class="c-model"><col class="c-material"><col class="c-weight"><col class="c-days"><col class="c-labor"><col class="c-labor"><col class="c-quantity"><col class="c-vat"><col class="c-vat"><col class="c-subtotal"></colgroup><thead><tr><th rowspan="2">No</th><th rowspan="2">모델번호<br>비고사항</th><th rowspan="2">재질<br>색상</th><th rowspan="2">금중량</th><th rowspan="2">개당<br>일수</th><th colspan="2">공임단가</th><th rowspan="2">수<br>량</th><th colspan="2">VAT별도</th><th rowspan="2">소계<br>VAT별도</th></tr><tr><th>기/추</th><th>중/보</th><th>공임합</th><th>금값</th></tr></thead><tbody>
+  {% for item in items %}<tr class="entry-{{ item.entry_type }}"><td>{{ forloop.counter }}</td><td>{% if item.statement_image %}<img src="{{ item.statement_image.url }}" alt="{{ item.model_number }} 제품 사진">{% endif %}<b>{{ item.model_number }}</b><small>{% if item.memo %}{{ item.memo }}{% elif item.entry_type == 'payment' %}결제일: {{ sale.sale_date|date:'Y-m-d' }}{% endif %}</small></td><td>{{ item.material|default:'-' }}<br>{{ item.color.code|default:'' }}</td><td>{{ item.total_weight|floatformat:3 }}</td><td></td><td>{{ item.unit_price|floatformat:0 }}</td><td></td><td>{{ item.quantity|floatformat:"-2" }}</td><td>{{ item.total_amount|floatformat:0 }}</td><td></td><td></td></tr>{% endfor %}
+  {% for row in empty_rows %}<tr class="empty-row"><td>{{ items|length|add:forloop.counter }}</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>{% endfor %}
+  </tbody><tfoot><tr><th colspan="2">(판매-반품) 소계 [1 / 1]</th><th colspan="5" class="material-subtotals"><span>14K {{ material_net_weights.14K|floatformat:3 }}g</span><br><span>18K {{ material_net_weights.18K|floatformat:3 }}g</span><br><span>24K {{ material_net_weights.24K|floatformat:3 }}g</span></th><th>{{ net_current.quantity|floatformat:"-2" }}</th><th>{{ net_current.labor|floatformat:0 }}</th><th></th><th></th></tr></tfoot></table>
+  <div class="page-chip">1</div>
+  <table class="balance-table"><thead><tr><th></th><th>순금(g)</th><th>순금(돈)</th><th>공임 및 현금</th><th>금값포함 합계</th></tr></thead><tbody>
+    <tr><th>최근 결제</th><td>{{ recent_payment.gold|floatformat:3 }}</td><td>{{ recent_payment.don|floatformat:3 }}</td><td>{{ recent_payment.labor|floatformat:0 }}</td><td>{% if recent_payment.date %}{{ recent_payment.date|date:'y-m-d' }} [{{ recent_payment.date|date:'D' }}]{% endif %}</td></tr>
+    <tr class="before-row"><th><i>✔</i>거래 전 미수</th><td>{{ prior.gold_receivable|floatformat:3 }}</td><td>{{ prior.gold_don|floatformat:3 }}</td><td>{{ prior.labor_receivable|floatformat:0 }}</td><td></td></tr>
+    <tr><th>판&nbsp;&nbsp;&nbsp;매</th><td>{{ current.sale.gold|floatformat:3 }}</td><td>{{ current.sale.don|floatformat:3 }}</td><td>{{ current.sale.labor|floatformat:0 }}</td><td></td></tr>
+    <tr class="return-row"><th>반&nbsp;&nbsp;&nbsp;품</th><td>{{ current.return.gold|floatformat:3 }}</td><td>{{ current.return.don|floatformat:3 }}</td><td>{{ current.return.labor|floatformat:0 }}</td><td></td></tr>
+    <tr class="payment-row"><th>결&nbsp;&nbsp;&nbsp;제</th><td>{{ current.payment.gold|floatformat:3 }}</td><td>{{ current.payment.don|floatformat:3 }}</td><td>{{ current.payment.labor|floatformat:0 }}</td><td></td></tr>
+    <tr class="after-row"><th><i>✔</i>거래 후 미수</th><td>{{ after.gold_receivable|floatformat:3 }}</td><td>{{ after.gold_don|floatformat:3 }}</td><td>{{ after.labor_receivable|floatformat:0 }}</td><td></td></tr>
+  </tbody></table>
+</section>{% endfor %}
+</main></body></html>

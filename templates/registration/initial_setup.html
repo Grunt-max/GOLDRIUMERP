@@ -1,0 +1,25 @@
+{% load static %}
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>골드리움 ERP 최초 설정</title>
+  <link rel="stylesheet" href="{% static 'erp/style.css' %}">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <header><strong>최초 관리자 설정</strong><span>처음 한 번만 사용할 수 있습니다.</span></header>
+    <form method="post" class="login-form setup-form">
+      {% csrf_token %}
+      {{ form.non_field_errors }}
+      <label>아이디{{ form.username }}{{ form.username.errors }}</label>
+      <label>비밀번호{{ form.password1 }}{{ form.password1.errors }}</label>
+      <label>비밀번호 확인{{ form.password2 }}{{ form.password2.errors }}</label>
+      <button type="submit">관리자 계정 만들기</button>
+    </form>
+    <a class="initial-setup-link" href="{% url 'login' %}">로그인 화면으로 돌아가기</a>
+    <p>계정 생성 후 이 설정 화면은 자동으로 비활성화됩니다.</p>
+  </main>
+</body>
+</html>
