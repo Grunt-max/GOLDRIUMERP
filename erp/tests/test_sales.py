@@ -775,9 +775,15 @@ class SaleStructureTests(TestCase):
         self.assertEqual(page.context["current_balance"], Decimal("-15.550"))
         purchase_page = self.client.get(reverse("erp:purchase_list"))
         self.assertContains(purchase_page, "외부 공장")
+        GoldLedgerEntry.objects.create(
+            entry_date=date(2026, 8, 22), factory=factory, entry_type="issue",
+            destination_type="purchase_supplier", purchase_supplier=supplier,
+            material=self.material_24, actual_weight=Decimal("2"), cash_amount=0,
+        )
         activity = self.client.get(reverse("erp:daily_activity_list"), {"date": "2026-08-22", "month": "2026-08"})
         self.assertContains(activity, "금 수불")
         self.assertContains(activity, "금 불출")
+        self.assertContains(activity, "외부 공장")
         self.client.post(reverse("erp:gold_ledger_delete", args=[issue.pk]))
         issue.refresh_from_db()
         self.assertTrue(issue.is_deleted)

@@ -833,7 +833,7 @@ def daily_activity_list(request):
     ).exclude(status="cancel").select_related("customer", "material")
     day_gold_entries = GoldLedgerEntry.objects.filter(
         entry_date=selected_date, is_deleted=False
-    ).select_related("factory", "material")
+    ).select_related("factory", "material", "purchase_supplier")
     return render(request, "erp/daily_activity_list.html", {
         "calendar_weeks": activity_calendar(selected_month.year, selected_month.month),
         "calendar_year": selected_month.year, "calendar_month": selected_month.month,
