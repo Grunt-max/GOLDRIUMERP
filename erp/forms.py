@@ -7,6 +7,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator
 from django.forms import BaseFormSet, formset_factory
 from django.utils import timezone
+from django.db.models.functions import Lower, Trim
 from .models import CompanyProfile, Customer, DailyActivity, Factory, GoldLedgerEntry, GoldPrice, Material, OpenMarketChannelSetting, OpenMarketProduct, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, SaleItem, SaleTransaction
 
 
@@ -262,6 +263,17 @@ class CustomerForm(StyledForm):
             "default_loss_rate": forms.NumberInput(attrs={"min": "0", "step": "0.01", "placeholder": "미설정 시 재질 기본값 적용"}),
             "supplier_name_override": forms.TextInput(attrs={"placeholder": "비워두면 기초관리의 기본 공급자명 사용"}),
         }
+
+    def clean_name(self):
+        name = self.cleaned_data["name"].strip()
+        duplicate = Customer.objects.annotate(
+            normalized_name=Lower(Trim("name")),
+        ).filter(normalized_name=name.lower())
+        if self.instance.pk:
+            duplicate = duplicate.exclude(pk=self.instance.pk)
+        if duplicate.exists():
+            raise ValidationError("이미 등록된 거래처명입니다.")
+        return name
 
 
 class ProductForm(StyledForm):

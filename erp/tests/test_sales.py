@@ -4,13 +4,14 @@ from io import BytesIO
 from tempfile import TemporaryDirectory
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 from django.utils import timezone
 from PIL import Image
 
-from erp.forms import SaleLineForm
+from erp.forms import CustomerForm, SaleLineForm
 from erp.models import CompanyProfile, Customer, DailyActivity, Factory, GoldLedgerEntry, GoldPrice, Material, Order, Product, ProductAlias, ProductColor, ProductWeightProfile, PurchaseEntry, PurchaseSupplier, SaleItem, SaleTransaction, UserAccessProfile, generate_transaction_no
 from erp.product_catalog import rebuild_product_weight_profiles
 from erp.views import monthly_sales_metrics
@@ -363,6 +364,53 @@ class SaleStructureTests(TestCase):
         self.assertEqual(self.customer.default_loss_rate, Decimal("7.25"))
         summary = self.client.get(reverse("erp:customer_sales_summary", args=[self.customer.pk])).json()
         self.assertEqual(summary["default_loss_rate"], "7.25")
+
+    def test_customer_name_cannot_be_registered_twice_after_normalization(self):
+        form = CustomerForm(data={
+            "name": f"  {self.customer.name}  ",
+            "customer_type": "sales",
+            "contact": "",
+            "phone": "",
+            "default_loss_rate": "",
+            "supplier_name_override": "",
+            "memo": "",
+        })
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["name"], ["이미 등록된 거래처명입니다."])
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Customer.objects.create(name=f" {self.customer.name} ", customer_type="sales")
+
+    def test_customer_can_keep_its_name_when_edited(self):
+        form = CustomerForm(data={
+            "name": f" {self.customer.name} ",
+            "customer_type": "sales",
+            "contact": "수정 담당자",
+            "phone": "",
+            "default_loss_rate": "",
+            "supplier_name_override": "",
+            "memo": "",
+        }, instance=self.customer)
+        self.assertTrue(form.is_valid(), form.errors)
+        updated = form.save()
+        self.assertEqual(updated.name, self.customer.name)
+
+    def test_sale_create_can_preselect_customer_from_receivables(self):
+        outstanding = SaleTransaction.objects.create(customer=self.customer)
+        SaleItem.objects.create(
+            transaction=outstanding, entry_type="sale", model_number="바로판매",
+            material=self.material_24, weight=Decimal("1.000"), quantity=1,
+            loss_rate=0, unit_price=1000,
+        )
+        outstanding.refresh_totals()
+
+        sale_url = f"{reverse('erp:sale_create')}?customer={self.customer.pk}"
+        receivables = self.client.get(reverse("erp:receivables_list"))
+        self.assertContains(receivables, sale_url, count=2)
+
+        sale_form = self.client.get(sale_url)
+        self.assertEqual(sale_form.context["header_form"]["customer"].value(), self.customer.pk)
+        self.assertContains(sale_form, self.customer.name)
 
     def test_receivables_hide_customers_with_zero_gold_and_labor(self):
         settled_customer = Customer.objects.create(name="정산완료 거래처", customer_type="sales")

@@ -4,6 +4,7 @@ from django.core.validators import FileExtensionValidator
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import timedelta
 from django.utils import timezone
+from django.db.models.functions import Lower, Trim
 
 
 def generate_transaction_no(sale_date=None):
@@ -45,6 +46,12 @@ class Customer(models.Model):
 
     class Meta:
         ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                Lower(Trim("name")),
+                name="unique_customer_normalized_name",
+            ),
+        ]
 
     def __str__(self):
         return self.name

@@ -1178,7 +1178,16 @@ def order_bulk_action(request):
 
 
 def sale_create(request):
-    header_form = SaleHeaderForm(request.POST or None, prefix="header")
+    selected_customer = None
+    if request.method == "GET" and request.GET.get("customer", "").isdigit():
+        selected_customer = Customer.objects.filter(
+            pk=request.GET["customer"], customer_type="sales",
+        ).first()
+    header_form = SaleHeaderForm(
+        request.POST or None,
+        prefix="header",
+        initial={"customer": selected_customer.pk} if selected_customer else None,
+    )
     line_formset = SaleLineFormSet(request.POST or None, prefix="lines")
     if request.method == "POST" and header_form.is_valid() and line_formset.is_valid():
         lines = [form.cleaned_data for form in line_formset if form.cleaned_data.get("model_number") and not form.cleaned_data.get("DELETE")]
