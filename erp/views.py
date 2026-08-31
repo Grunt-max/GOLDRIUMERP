@@ -1,7 +1,10 @@
 from decimal import Decimal
 import calendar
 from datetime import date, timedelta
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 from django.contrib import messages
+from django.core.files.base import ContentFile
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Q
@@ -12,9 +15,388 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.views.decorators.http import require_POST
 from .access import master_reauthentication_required
-from .forms import CompanyProfileForm, CustomerForm, DailyActivityForm, GoldLedgerEntryForm, MaterialForm, OrderForm, ProductColorForm, ProductForm, PurchaseHeaderForm, PurchaseLineFormSet, PurchaseSupplierForm, SaleHeaderForm, SaleLineFormSet
-from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, Factory, GoldLedgerEntry, Material, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, SaleItem, SaleTransaction, generate_transaction_no
+from .gold_prices import collect_gold_prices
+from .forms import CompanyProfileForm, CustomerForm, DailyActivityForm, GoldLedgerEntryForm, GoldPriceForm, MaterialForm, OpenMarketChannelSettingForm, OpenMarketProductForm, OrderForm, ProductColorForm, ProductForm, PurchaseHeaderForm, PurchaseLineFormSet, PurchaseSupplierForm, SaleHeaderForm, SaleLineFormSet
+from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, Factory, GoldLedgerEntry, GoldPrice, MarketplaceProduct, Material, OpenMarketChannelOffer, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketVariant, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, SaleItem, SaleTransaction, generate_transaction_no
+from .open_market_aliases import CHANNEL_ONLY_FIELDS, COMMON_FIELD_ALIASES
+from .marketplaces import MarketplaceError, channel_configuration, fetch_coupang_products, fetch_naver_products
+from .marketplace_transformers import build_channel_preview
 from .product_catalog import rebuild_product_weight_profiles
+
+
+def marketplace_list(request):
+    return marketplace_master_products(request)
+
+
+def marketplace_channel_items(request, channel):
+    if channel not in {"naver", "coupang"}:
+        return redirect("erp:marketplace_list")
+    selected_channel = request.GET.get("channel", "")
+    query = request.GET.get("q", "").strip()
+    rows = MarketplaceProduct.objects.filter(channel=channel)
+    if query:
+        rows = rows.filter(Q(name__icontains=query) | Q(external_product_id__icontains=query))
+    channels = channel_configuration()
+    for key, info in channels.items():
+        info["count"] = MarketplaceProduct.objects.filter(channel=key).count()
+        info["last_synced"] = MarketplaceProduct.objects.filter(channel=key).order_by("-synced_at").values_list("synced_at", flat=True).first()
+    return render(request, "erp/marketplace_list.html", {
+        "products": Paginator(rows, 50).get_page(request.GET.get("page")),
+        "channels": channels,
+        "selected_channel": channel,
+        "channel_key": channel,
+        "channel_info": channels[channel],
+        "query": query,
+    })
+
+
+def marketplace_master_products(request):
+    products = OpenMarketProduct.objects.prefetch_related(
+        "variants", "channel_settings", "marketplace_snapshots__normalized_offers"
+    )
+    previews = []
+    for product in products:
+        preview = build_channel_preview(product)
+        naver = preview["naver_listing"]
+        coupang = preview["coupang_listing"]
+        preview["naver_offers"] = list(naver.normalized_offers.all()) if naver else []
+        preview["coupang_offers"] = list(coupang.normalized_offers.all()) if coupang else []
+        preview["option_count_conflict"] = bool(
+            naver and coupang and naver.option_count != coupang.option_count
+        )
+        previews.append(preview)
+    return render(request, "erp/marketplace_master_products.html", {
+        "previews": previews,
+    })
+
+
+def marketplace_master_product_detail(request, pk):
+    product = get_object_or_404(
+        OpenMarketProduct.objects.prefetch_related(
+            "variants", "marketplace_snapshots__normalized_offers", "channel_settings"
+        ), pk=pk,
+    )
+    settings = {row.channel: row for row in product.channel_settings.all()}
+    for channel in ("naver", "coupang"):
+        if channel not in settings:
+            settings[channel] = OpenMarketChannelSetting.objects.create(product=product, channel=channel)
+    product_form = OpenMarketProductForm(request.POST or None, instance=product, prefix="master")
+    naver_form = OpenMarketChannelSettingForm(request.POST or None, instance=settings["naver"], prefix="naver")
+    coupang_form = OpenMarketChannelSettingForm(request.POST or None, instance=settings["coupang"], prefix="coupang")
+    if request.method == "POST" and product_form.is_valid() and naver_form.is_valid() and coupang_form.is_valid():
+        product_form.save()
+        naver_form.save()
+        coupang_form.save()
+        messages.success(request, "오픈마켓 공통 정보와 채널별 설정을 저장했습니다.")
+        return redirect("erp:marketplace_master_product_detail", pk=pk)
+    preview = build_channel_preview(product)
+    naver = preview["naver_listing"]
+    coupang = preview["coupang_listing"]
+    preview["naver_offers"] = list(naver.normalized_offers.all()) if naver else []
+    preview["coupang_offers"] = list(coupang.normalized_offers.all()) if coupang else []
+    preview["option_count_conflict"] = bool(naver and coupang and naver.option_count != coupang.option_count)
+    pricing_rows = []
+    for variant in product.variants.all():
+        pricing_rows.append({"variant": variant, "naver": variant.cost_and_price("naver"),
+                             "coupang": variant.cost_and_price("coupang")})
+    return render(request, "erp/marketplace_master_product_detail.html", {
+        "preview": preview, "product_form": product_form, "naver_form": naver_form,
+        "coupang_form": coupang_form, "pricing_rows": pricing_rows,
+        "field_aliases": COMMON_FIELD_ALIASES, "channel_only_fields": CHANNEL_ONLY_FIELDS,
+    })
+
+
+def marketplace_sales_overview(request):
+    channels = channel_configuration()
+    rows = []
+    for key, info in channels.items():
+        listings = MarketplaceProduct.objects.filter(channel=key)
+        rows.append({
+            "key": key, "label": info["label"], "product_count": listings.count(),
+            "linked_count": listings.exclude(master_product=None).count(),
+            "status": "주문·정산 API 연결 필요",
+        })
+    return render(request, "erp/marketplace_sales_overview.html", {"channel_rows": rows})
+
+
+def marketplace_product_detail(request, pk):
+    product = get_object_or_404(MarketplaceProduct, pk=pk)
+    options = []
+    if product.channel == "naver" and isinstance(product.raw_data, dict):
+        origin = product.raw_data.get("originProduct", {})
+        detail = origin.get("detailAttribute", {}) if isinstance(origin, dict) else {}
+        option_info = detail.get("optionInfo", {}) if isinstance(detail, dict) else {}
+        limit = product.option_price_limit
+        option_sources = (
+            ("optionCombinations", "조합형"), ("optionSimple", "단독형"),
+            ("optionCustom", "직접입력형"), ("optionStandards", "표준형"),
+            ("optionDeliveryAttributes", "배송속성"),
+        )
+        for source_key, type_label in option_sources:
+            source_rows = option_info.get(source_key, []) if isinstance(option_info, dict) else []
+            for option in source_rows if isinstance(source_rows, list) else []:
+                if not isinstance(option, dict):
+                    continue
+                additional = product._market_decimal(option.get("price")) or Decimal("0")
+                names = [str(option.get(f"optionName{number}", "")).strip() for number in range(1, 5)]
+                if not any(names):
+                    names = [
+                        str(option.get("groupName") or option.get("optionGroupName") or "").strip(),
+                        str(option.get("name") or option.get("optionName") or option.get("value") or "").strip(),
+                    ]
+                options.append({
+                    "number": len(options) + 1, "type": type_label, "external_id": option.get("id"),
+                    "name": " / ".join(name for name in names if name) or f"옵션 {len(options) + 1}",
+                    "additional_price": additional,
+                    "display_price": product.display_price + additional if product.display_price is not None else None,
+                    "stock": option.get("stockQuantity"), "usable": option.get("usable", True),
+                    "rule_ok": limit is None or abs(additional) <= limit,
+                })
+    elif product.channel == "coupang":
+        base_price = product.display_price
+        for item in product.coupang_items:
+            sale_price = product._market_decimal(item.get("salePrice"))
+            original_price = product._market_decimal(item.get("originalPrice"))
+            attributes = item.get("attributes", []) if isinstance(item.get("attributes"), list) else []
+            attribute_names = []
+            for attribute in attributes:
+                if not isinstance(attribute, dict):
+                    continue
+                type_name = str(attribute.get("attributeTypeName") or "").strip()
+                value_name = str(attribute.get("attributeValueName") or "").strip()
+                attribute_names.append(" ".join(value for value in (type_name, value_name) if value))
+            item_name = str(item.get("itemName") or "").strip() or " / ".join(name for name in attribute_names if name) or "쿠팡 옵션"
+            item_status = str(item.get("salesStatus") or item.get("saleStatus") or item.get("status") or "").upper()
+            options.append({
+                "number": len(options) + 1, "type": "쿠팡 아이템",
+                "external_id": item.get("vendorItemId") or item.get("sellerProductItemId"),
+                "name": item_name, "attributes": " / ".join(name for name in attribute_names if name),
+                "additional_price": ((sale_price - base_price) if sale_price is not None and base_price is not None else Decimal("0")),
+                "display_price": sale_price, "original_price": original_price,
+                "stock": item.get("quantity", item.get("stockQuantity")),
+                "usable": (None if not item_status else item_status not in {"STOP", "SUSPENSION", "SUSPENDED", "OUT_OF_STOCK"}),
+                "status": item_status,
+                "rule_ok": True,
+            })
+    return render(request, "erp/marketplace_product_detail.html", {
+        "product": product,
+        "options": options,
+        "master_products": OpenMarketProduct.objects.order_by("code"),
+        "suggested_code": f"MK-{product.channel[0].upper()}-{product.external_product_id}"[:40],
+        "discount_amount": (
+            product.sale_price - product.display_price
+            if product.sale_price is not None and product.display_price is not None else None
+        ),
+    })
+
+
+def _copy_marketplace_image(marketplace_product, master_product):
+    image_url = marketplace_product.image_url
+    if not image_url:
+        return False
+    parsed = urlparse(image_url)
+    allowed_hosts = ("coupangcdn.com", "pstatic.net", "naver.net")
+    hostname = parsed.hostname or ""
+    if parsed.scheme != "https" or not any(hostname == host or hostname.endswith("." + host) for host in allowed_hosts):
+        return False
+    request = Request(image_url, headers={"User-Agent": "GoldriumERP/1.0"})
+    with urlopen(request, timeout=20) as response:
+        content_type = response.headers.get("Content-Type", "").split(";")[0].lower()
+        extension = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}.get(content_type)
+        if not extension:
+            return False
+        data = response.read(10 * 1024 * 1024 + 1)
+        if len(data) > 10 * 1024 * 1024:
+            raise ValueError("대표 이미지가 10MB를 초과합니다.")
+        master_product.image.save(f"{master_product.code}{extension}", ContentFile(data), save=True)
+    return True
+
+
+@require_POST
+def marketplace_product_import(request, pk):
+    snapshot = get_object_or_404(MarketplaceProduct, pk=pk)
+    action = request.POST.get("action")
+    if action == "link":
+        master = get_object_or_404(OpenMarketProduct, pk=request.POST.get("master_product"))
+        snapshot.master_product = master
+        snapshot.save(update_fields=["master_product"])
+        messages.success(request, f"{snapshot.name}을(를) ERP 상품 {master.code}에 연결했습니다.")
+        return redirect("erp:marketplace_product_detail", pk=pk)
+    if action != "create":
+        messages.error(request, "지원하지 않는 ERP 상품화 방식입니다.")
+        return redirect("erp:marketplace_product_detail", pk=pk)
+    code = request.POST.get("code", "").strip()[:40]
+    name = request.POST.get("name", "").strip()[:120]
+    if not code or not name:
+        messages.error(request, "ERP 모델번호와 상품명을 입력해 주세요.")
+        return redirect("erp:marketplace_product_detail", pk=pk)
+    if OpenMarketProduct.objects.filter(code=code).exists():
+        messages.error(request, f"이미 사용 중인 ERP 모델번호입니다: {code}")
+        return redirect("erp:marketplace_product_detail", pk=pk)
+    with transaction.atomic():
+        master = OpenMarketProduct.objects.create(code=code, name=name, active=False)
+        OpenMarketChannelSetting.objects.bulk_create([
+            OpenMarketChannelSetting(product=master, channel="naver", delivery_method="DELIVERY"),
+            OpenMarketChannelSetting(product=master, channel="coupang", delivery_method="SEQUENCIAL"),
+        ])
+        for variant_code in ("14KY", "14KP", "18KY", "18KP"):
+            OpenMarketVariant.objects.create(
+                product=master, sku=f"{code}-{variant_code}", base_variant=variant_code,
+            )
+        snapshot.master_product = master
+        snapshot.save(update_fields=["master_product"])
+    image_message = ""
+    try:
+        if _copy_marketplace_image(snapshot, master):
+            image_message = " 대표 사진도 ERP에 저장했습니다."
+    except Exception as exc:
+        image_message = f" 사진 복사는 실패했습니다({exc})."
+    messages.success(request, f"오픈마켓 마스터 초안을 생성했습니다: {master.code}.{image_message} 중량·공임 확인 후 운영 상품으로 전환하세요.")
+    return redirect("erp:marketplace_product_detail", pk=pk)
+
+
+def _first(data, *keys, default=""):
+    for key in keys:
+        value = data.get(key)
+        if value is not None and value != "":
+            return value
+    return default
+
+
+def _coupang_image_url(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if value.startswith("https://image1a.coupangcdn.com/image/"):
+        value = value.removeprefix("https://image1a.coupangcdn.com/image/")
+    if value.startswith("//"):
+        return "https:" + value
+    if value.startswith(("http://", "https://")):
+        return value
+    return "https://thumbnail6.coupangcdn.com/thumbnails/remote/492x492ex/image/" + value.lstrip("/")
+
+
+def _sync_normalized_offers(listing, channel, options):
+    """Keep a channel-neutral option/price snapshot for later write APIs."""
+    kept_ids = []
+    base_price = listing.display_price
+    for index, option in enumerate(options if isinstance(options, list) else [], start=1):
+        if not isinstance(option, dict):
+            continue
+        if channel == "naver":
+            external_id = str(option.get("id") or f"row-{index}")
+            names = [str(option.get(f"optionName{number}") or "").strip() for number in range(1, 5)]
+            option_name = " / ".join(value for value in names if value)
+            if not option_name:
+                option_name = " / ".join(str(option.get(key) or "").strip() for key in ("groupName", "name") if option.get(key))
+            additional = listing._market_decimal(option.get("price")) or Decimal("0")
+            original_price = listing.sale_price
+            sale_price = base_price + additional if base_price is not None else None
+            status = "SALE" if option.get("usable", True) else "SUSPENSION"
+        else:
+            external_id = str(option.get("vendorItemId") or option.get("sellerProductItemId") or f"row-{index}")
+            option_name = str(option.get("itemName") or "").strip()
+            original_price = listing._market_decimal(option.get("originalPrice"))
+            sale_price = listing._market_decimal(option.get("salePrice"))
+            additional = sale_price - base_price if sale_price is not None and base_price is not None else Decimal("0")
+            status = str(option.get("salesStatus") or option.get("saleStatus") or option.get("status") or "")
+        OpenMarketChannelOffer.objects.update_or_create(
+            listing=listing, external_option_id=external_id,
+            defaults={
+                "option_name": option_name or f"옵션 {index}", "original_price": original_price,
+                "sale_price": sale_price, "additional_price": additional,
+                "display_price": sale_price,
+                "stock_quantity": option.get("stockQuantity", option.get("quantity")),
+                "sale_status": status, "raw_attributes": option,
+            },
+        )
+        kept_ids.append(external_id)
+    stale = listing.normalized_offers.all()
+    if kept_ids:
+        stale = stale.exclude(external_option_id__in=kept_ids)
+    stale.delete()
+
+
+def _sync_marketplace_rows(channel, rows):
+    saved = 0
+    with transaction.atomic():
+        for row in rows:
+            if channel == "naver":
+                origin = row.get("originProduct") if isinstance(row.get("originProduct"), dict) else row
+                summary = row.get("searchProduct") if isinstance(row.get("searchProduct"), dict) else row
+                product_id = str(_first(row, "originProductNo", default=_first(summary, "originProductNo", "channelProductNo", "productNo", "id")))
+                name = str(_first(origin, "name", "productName", "channelProductName", default=f"상품 {product_id}"))
+                price = _first(origin, "salePrice", "discountedPrice", "channelProductDisplayPrice", default=None)
+                status = str(_first(origin, "statusType", "channelProductStatusType"))
+                category = str(_first(origin, "leafCategoryId", "categoryId"))
+                url = str(_first(summary, "channelProductUrl", "productUrl"))
+                images = origin.get("images") if isinstance(origin.get("images"), dict) else {}
+                image = _first(images, "representativeImage", default=_first(origin, "representativeImage", "imageUrl", default=""))
+                if isinstance(image, dict):
+                    image = _first(image, "url", "imageUrl")
+                detail_attribute = origin.get("detailAttribute") if isinstance(origin.get("detailAttribute"), dict) else {}
+                option_info = detail_attribute.get("optionInfo") if isinstance(detail_attribute.get("optionInfo"), dict) else {}
+                options = []
+                for option_key in ("optionCombinations", "optionSimple", "optionCustom", "optionStandards"):
+                    candidate = option_info.get(option_key)
+                    if isinstance(candidate, list) and candidate:
+                        options = candidate
+                        break
+            else:
+                product_id = str(_first(row, "sellerProductId", "productId"))
+                name = str(_first(row, "sellerProductName", "displayProductName", default=f"상품 {product_id}"))
+                options = _first(row, "items", "options", default=[])
+                item_prices = [
+                    _first(item, "originalPrice", "salePrice", default=None)
+                    for item in options if isinstance(item, dict)
+                ] if isinstance(options, list) else []
+                item_prices = [value for value in item_prices if value is not None]
+                price = min(item_prices) if item_prices else _first(row, "salePrice", "price", default=None)
+                status = str(_first(row, "statusName", "status"))
+                category = str(_first(row, "displayCategoryCode", "categoryId"))
+                summary = row.get("listSummary", {}) if isinstance(row.get("listSummary"), dict) else {}
+                coupang_product_id = _first(summary, "productId", default=_first(row, "productId", default=""))
+                url = str(_first(row, "productUrl", "url", default=(f"https://www.coupang.com/vp/products/{coupang_product_id}" if coupang_product_id else "")))
+                image = _coupang_image_url(_first(row, "imageUrl", "thumbnailUrl"))
+                if not image and isinstance(options, list):
+                    for item in options:
+                        images = item.get("images", []) if isinstance(item, dict) else []
+                        if isinstance(images, list) and images:
+                            candidate = images[0]
+                            image = _coupang_image_url(_first(candidate, "cdnPath", "vendorPath", "url", default="")) if isinstance(candidate, dict) else ""
+                            if image:
+                                break
+            if not product_id:
+                continue
+            listing, _ = MarketplaceProduct.objects.update_or_create(
+                channel=channel, external_product_id=product_id,
+                defaults={
+                    "name": name, "status": status, "category_code": category,
+                    "product_url": url, "image_url": image or "", "sale_price": price,
+                    "option_count": len(options) if isinstance(options, list) else 0, "raw_data": row,
+                },
+            )
+            _sync_normalized_offers(listing, channel, options)
+            saved += 1
+    return saved
+
+
+@require_POST
+def marketplace_sync(request, channel):
+    if channel not in {"naver", "coupang"}:
+        messages.error(request, "지원하지 않는 오픈마켓입니다.")
+        return redirect("erp:marketplace_list")
+    config = channel_configuration()[channel]
+    if not config["configured"]:
+        messages.error(request, f"{config['label']} API 환경설정이 없습니다: {', '.join(config['missing'])}")
+        return redirect("erp:marketplace_channel_items", channel=channel)
+    try:
+        rows = fetch_naver_products() if channel == "naver" else fetch_coupang_products()
+        saved = _sync_marketplace_rows(channel, rows)
+        messages.success(request, f"{config['label']} 상품 {saved}개를 읽기 전용으로 수집했습니다.")
+    except MarketplaceError as exc:
+        messages.error(request, str(exc))
+    return redirect("erp:marketplace_channel_items", channel=channel)
 
 
 def customer_receivable_totals(sales):
@@ -40,6 +422,19 @@ def customer_receivable_totals(sales):
         "cash_receivable": Decimal("0"),
         "labor_receivable": sold_labor - returned_labor - paid_labor - adjusted_labor,
     }
+
+
+def split_receivable_balance(balance):
+    """Expose receivables and advances separately without changing the signed ledger balance."""
+    gold = balance["gold_receivable"]
+    labor = balance["labor_receivable"]
+    balance.update({
+        "gold_due": max(gold, Decimal("0")),
+        "gold_advance": max(-gold, Decimal("0")),
+        "labor_due": max(labor, Decimal("0")),
+        "labor_advance": max(-labor, Decimal("0")),
+    })
+    return balance
 
 
 def fulfill_matching_orders(customer, model_number, sold_quantity, completed_at=None):
@@ -108,19 +503,18 @@ def monthly_sales_metrics(year, month):
     labor = Decimal("0")
     for item in items:
         sign = Decimal("-1") if item.entry_type == "return" else Decimal("1")
-        base = item.total_weight
-        if item.material and item.material.apply_loss_rate:
-            base *= item.material.purity_rate
+        is_gold = bool(item.material and item.material.is_gold_material)
+        base = item.total_weight * item.material.purity_rate if is_gold else Decimal("0")
         base_gold += sign * base
-        loss_gold += sign * (base * item.loss_rate / Decimal("100"))
+        if item.material and item.material.uses_loss_rate:
+            loss_gold += sign * (base * item.loss_rate / Decimal("100"))
         labor += sign * item.total_amount
     purchase_base = Decimal("0")
     purchase_loss = Decimal("0")
     purchase_labor = Decimal("0")
     for item in PurchaseEntry.objects.filter(purchase_date__gte=start, purchase_date__lt=end, is_deleted=False).select_related("material"):
-        base = item.actual_weight
-        if item.material.apply_loss_rate:
-            base *= item.material.purity_rate
+        base = item.actual_weight * item.material.purity_rate if item.material.is_gold_material else Decimal("0")
+        if item.material.uses_loss_rate:
             purchase_loss += base * item.loss_rate / Decimal("100")
         purchase_base += base
         purchase_labor += item.purchase_amount
@@ -140,12 +534,24 @@ def monthly_sales_metrics(year, month):
 
 def monthly_customer_sales(request):
     today = timezone.localdate()
-    month_text = request.GET.get("month", f"{today:%Y-%m}")
-    try:
-        selected_month = date.fromisoformat(f"{month_text}-01")
-    except ValueError:
-        selected_month = today.replace(day=1)
-    start, end = month_bounds(selected_month.year, selected_month.month)
+    current_month = today.replace(day=1)
+
+    def parse_month(value):
+        try:
+            parsed = date.fromisoformat(f"{value}-01")
+        except (TypeError, ValueError):
+            return current_month
+        return min(parsed, current_month)
+
+    legacy_month = request.GET.get("month")
+    start_month = parse_month(request.GET.get("start_month") or legacy_month or f"{today:%Y-%m}")
+    end_month = parse_month(request.GET.get("end_month") or legacy_month or f"{today:%Y-%m}")
+    if start_month > end_month:
+        start_month, end_month = end_month, start_month
+    start = start_month
+    _, end = month_bounds(end_month.year, end_month.month)
+    if end_month == current_month:
+        end = today + timedelta(days=1)
     rows = {}
     items = SaleItem.objects.filter(
         transaction__sale_date__gte=start, transaction__sale_date__lt=end,
@@ -159,10 +565,9 @@ def monthly_customer_sales(request):
             "total_gold": Decimal("0"), "labor": Decimal("0"), "quantity": Decimal("0"),
         })
         sign = Decimal("-1") if item.entry_type == "return" else Decimal("1")
-        base = item.total_weight
-        if item.material and item.material.apply_loss_rate:
-            base *= item.material.purity_rate
-        loss = base * item.loss_rate / Decimal("100")
+        is_gold = bool(item.material and item.material.is_gold_material)
+        base = item.total_weight * item.material.purity_rate if is_gold else Decimal("0")
+        loss = base * item.loss_rate / Decimal("100") if item.material and item.material.uses_loss_rate else Decimal("0")
         row["base_gold"] += sign * base
         row["loss_gold"] += sign * loss
         row["total_gold"] += sign * (base + loss)
@@ -180,9 +585,21 @@ def monthly_customer_sales(request):
         key: sum((row[key] for row in customer_rows), Decimal("0"))
         for key in ("base_gold", "loss_gold", "total_gold", "labor", "quantity")
     }
+    latest_wholesale = GoldPrice.objects.filter(market_type="wholesale").first()
+    wholesale_per_gram = latest_wholesale.applied_price_per_gram if latest_wholesale else None
+    if wholesale_per_gram is not None:
+        for row in customer_rows:
+            row["loss_value"] = (row["loss_gold"] * wholesale_per_gram).quantize(Decimal("1"))
+        totals["loss_value"] = (totals["loss_gold"] * wholesale_per_gram).quantize(Decimal("1"))
+    else:
+        totals["loss_value"] = None
     return render(request, "erp/monthly_customer_sales.html", {
-        "rows": customer_rows, "totals": totals, "selected_month": selected_month,
-        "month_text": f"{selected_month:%Y-%m}", "selected_sort": sort_key,
+        "rows": customer_rows, "totals": totals,
+        "start_month": start_month, "end_month": end_month,
+        "start_month_text": f"{start_month:%Y-%m}", "end_month_text": f"{end_month:%Y-%m}",
+        "current_month_text": f"{current_month:%Y-%m}",
+        "period_start": start, "period_end": end - timedelta(days=1),
+        "selected_sort": sort_key, "wholesale_price": latest_wholesale,
     })
 
 
@@ -232,8 +649,17 @@ def dashboard(request):
     month_start, next_month_start = month_bounds(today.year, today.month)
     sales = SaleTransaction.objects.exclude(status="cancel")
     total_sales = sum((sale.total_labor_amount for sale in sales), Decimal("0"))
-    total_gold_receivable = sum((sale.gold_receivable for sale in sales), Decimal("0"))
-    total_labor_receivable = sum((sale.labor_receivable for sale in sales), Decimal("0"))
+    customer_sales = {}
+    for sale in sales:
+        customer_sales.setdefault(sale.customer_id, []).append(sale)
+    customer_balances = [
+        split_receivable_balance(customer_receivable_totals(rows))
+        for rows in customer_sales.values()
+    ]
+    total_gold_receivable = sum((row["gold_due"] for row in customer_balances), Decimal("0"))
+    total_labor_receivable = sum((row["labor_due"] for row in customer_balances), Decimal("0"))
+    total_gold_advance = sum((row["gold_advance"] for row in customer_balances), Decimal("0"))
+    total_labor_advance = sum((row["labor_advance"] for row in customer_balances), Decimal("0"))
     overdue_groups = {}
     overdue_orders = Order.objects.filter(
         status__in=("new", "partial"), is_deleted=False,
@@ -246,10 +672,36 @@ def dashboard(request):
         group["count"] += 1
         if order.due_date < group["oldest_due_date"]:
             group["oldest_due_date"] = order.due_date
+    def market_price_context(market_type):
+        prices = list(GoldPrice.objects.filter(market_type=market_type)[:2])
+        latest = prices[0] if prices else None
+        previous = prices[1] if len(prices) > 1 else None
+        change = rate = None
+        if latest and previous:
+            change = latest.applied_price_per_gram - previous.applied_price_per_gram
+            if previous.applied_price_per_gram:
+                rate = change / previous.applied_price_per_gram * Decimal("100")
+        return {"latest": latest, "change": change, "change_rate": rate}
+    retail_price = market_price_context("retail")
+    wholesale_price = market_price_context("wholesale")
+    collected_times = [
+        price["latest"].collected_at
+        for price in (retail_price, wholesale_price)
+        if price["latest"] and price["latest"].collected_at
+    ]
+    gold_last_collected = max(collected_times) if collected_times else None
+    month_metrics = monthly_sales_metrics(today.year, today.month)
+    wholesale_loss_value = None
+    if wholesale_price["latest"]:
+        wholesale_loss_value = (
+            month_metrics["loss_gold"] * wholesale_price["latest"].applied_price_per_gram
+        ).quantize(Decimal("1"))
     return render(request, "erp/dashboard.html", {
         "order_count": sales.count(), "total_sales": total_sales,
         "total_gold_receivable": total_gold_receivable,
         "total_labor_receivable": total_labor_receivable,
+        "total_gold_advance": total_gold_advance,
+        "total_labor_advance": total_labor_advance,
         "recent_payments": SaleItem.objects.filter(
             entry_type="payment", is_deleted=False,
             transaction__status__in=("new", "done"),
@@ -258,13 +710,88 @@ def dashboard(request):
         )[:8],
         "order_dashboard": build_order_dashboard(),
         "overdue_customers": list(overdue_groups.values()),
-        "month_metrics": monthly_sales_metrics(today.year, today.month),
+        "month_metrics": month_metrics,
+        "wholesale_loss_value": wholesale_loss_value,
         "month_start": month_start, "month_end": next_month_start - timedelta(days=1),
         "calendar_weeks": activity_calendar(today.year, today.month),
         "calendar_year": today.year, "calendar_month": today.month,
         "activity_form": DailyActivityForm(),
         "customers": Customer.objects.order_by("name"),
         "today": today,
+        "retail_price": retail_price, "wholesale_price": wholesale_price,
+        "gold_last_collected": gold_last_collected,
+        "gold_price_form": GoldPriceForm(initial={"market_type": "retail", "price_date": today, "application_rate": Decimal("102.00")}),
+    })
+
+
+@require_POST
+def gold_price_save(request):
+    instance = GoldPrice.objects.filter(
+        market_type=request.POST.get("market_type"), price_date=request.POST.get("price_date")
+    ).first()
+    form = GoldPriceForm(request.POST, instance=instance)
+    if form.is_valid():
+        price = form.save(commit=False)
+        if request.user.is_authenticated:
+            price.created_by = request.user
+        price.collected_at = timezone.now()
+        price.save()
+        messages.success(request, f"{price.price_date:%Y-%m-%d} 금시세를 저장했습니다.")
+    else:
+        messages.error(request, "금시세 입력값을 확인하세요.")
+    return redirect("erp:dashboard")
+
+
+@require_POST
+def gold_price_refresh(request):
+    try:
+        retail, wholesale = collect_gold_prices()
+        messages.success(
+            request,
+            f"시세 갱신 완료: 소매 {retail.applied_price_per_gram:,.0f}원/g · "
+            f"도매 {wholesale.applied_price_per_gram:,.0f}원/g",
+        )
+    except Exception as exc:
+        messages.error(request, f"시세 갱신 실패: {exc} 마지막 정상 시세를 유지합니다.")
+    return redirect(request.POST.get("next") or "erp:gold_price_list")
+
+
+def _gold_chart(market_type, dates):
+    rows = list(GoldPrice.objects.filter(
+        market_type=market_type, price_date__in=dates,
+    ).order_by("price_date"))
+    if not rows:
+        return {"rows": [], "points": "", "point_rows": [], "minimum": 0, "maximum": 0}
+    values = [int(row.applied_price_per_gram) for row in rows]
+    minimum, maximum = min(values), max(values)
+    spread = maximum - minimum or 1
+    count = len(rows) - 1
+    point_rows = []
+    for index, (row, value) in enumerate(zip(rows, values)):
+        x = 400 if count == 0 else 30 + index * 740 / count
+        y = 165 - (value - minimum) * 120 / spread
+        point_rows.append({"row": row, "x": f"{x:.1f}", "y": f"{y:.1f}", "price": value})
+    points = " ".join(f"{point['x']},{point['y']}" for point in point_rows)
+    return {
+        "rows": list(reversed(rows)), "points": points, "point_rows": point_rows,
+        "minimum": minimum, "maximum": maximum,
+        "first_date": rows[0].price_date, "last_date": rows[-1].price_date,
+    }
+
+
+def gold_price_list(request):
+    price_dates = list(
+        GoldPrice.objects.order_by("-price_date").values_list("price_date", flat=True).distinct()
+    )
+    page_obj = Paginator(price_dates, 10).get_page(request.GET.get("page"))
+    page_dates = list(page_obj.object_list)
+    return render(request, "erp/gold_price_list.html", {
+        "retail_chart": _gold_chart("retail", page_dates),
+        "wholesale_chart": _gold_chart("wholesale", page_dates),
+        "latest_retail": GoldPrice.objects.filter(market_type="retail").first(),
+        "latest_wholesale": GoldPrice.objects.filter(market_type="wholesale").first(),
+        "page_obj": page_obj,
+        "page_range": page_obj.paginator.get_elided_page_range(page_obj.number, on_each_side=2, on_ends=1),
     })
 
 
@@ -571,7 +1098,9 @@ def order_create(request):
             with transaction.atomic():
                 for index, parsed in enumerate(parsed_lines):
                     product = Product.objects.filter(code__iexact=parsed["model_number"], active=True).first()
-                    material = product.material if product and product.material_id else parsed["material"]
+                    # Explicit text such as "18kw" must not be overwritten by a
+                    # catalog product whose default material happens to be 14K.
+                    material = parsed["material"]
                     loss_rate = (
                         product.default_loss_rate if product and product.default_loss_rate is not None
                         else form.cleaned_data["customer"].default_loss_rate
@@ -715,10 +1244,8 @@ def sale_create(request):
             return redirect("erp:sales_list")
     product_defaults = [{
         "id": product.id, "model_number": product.code, "name": product.name,
-        "material_id": product.material_id,
-        "color_id": product.color_id,
-        "weight": str(product.default_weight or ""), "unit_price": str(product.unit_price),
-        "loss_rate": str(product.default_loss_rate) if product.default_loss_rate is not None else None,
+        "material_id": None, "color_id": None, "weight": "",
+        "unit_price": str(product.unit_price), "loss_rate": None,
         "image_url": product.image.url if product.image else "",
         "aliases": list(product.aliases.values_list("alias", flat=True)),
         "weight_profiles": [{
@@ -748,9 +1275,7 @@ def receivables_list(request):
         row["sales"].append(sale)
         row["transactions"] += 1
     for row in rows.values():
-        row.update(customer_receivable_totals(row.pop("sales")))
-        row["gold_negative"] = row["gold_receivable"] < 0
-        row["labor_negative"] = row["labor_receivable"] < 0
+        row.update(split_receivable_balance(customer_receivable_totals(row.pop("sales"))))
         customer_sales = SaleTransaction.objects.exclude(status="cancel").filter(customer=row["customer"])
         row["recent_transaction_date"] = customer_sales.order_by("-sale_date", "-id").values_list("sale_date", flat=True).first()
         row["recent_payment_date"] = customer_sales.filter(items__entry_type="payment").order_by("-sale_date", "-id").values_list("sale_date", flat=True).first()
@@ -761,10 +1286,18 @@ def receivables_list(request):
         ),
         key=lambda row: row["customer"].name,
     )
-    totals = {key: sum((row[key] for row in receivables), Decimal("0")) for key in ("gold_receivable", "cash_receivable", "labor_receivable")}
-    totals["gold_negative"] = totals["gold_receivable"] < 0
-    totals["labor_negative"] = totals["labor_receivable"] < 0
-    return render(request, "erp/receivables_list.html", {"receivables": receivables, "totals": totals})
+    receivable_rows = [row for row in receivables if row["gold_due"] or row["labor_due"]]
+    advance_rows = [row for row in receivables if row["gold_advance"] or row["labor_advance"]]
+    totals = {
+        key: sum((row[key] for row in receivables), Decimal("0"))
+        for key in ("gold_due", "gold_advance", "labor_due", "labor_advance")
+    }
+    return render(request, "erp/receivables_list.html", {
+        "receivables": receivables,
+        "receivable_rows": receivable_rows,
+        "advance_rows": advance_rows,
+        "totals": totals,
+    })
 
 
 def customer_sales_summary(request, pk):
@@ -847,13 +1380,11 @@ def product_search(request):
     alias_ids = ProductAlias.objects.filter(alias__icontains=query).values_list("product_id", flat=True) if query else []
     if query:
         products = Product.objects.filter(Q(pk__in=alias_ids) | Q(code__icontains=query) | Q(name__icontains=query), active=True)
-    products = products.select_related("material", "color").prefetch_related("aliases", "weight_profiles")[:20]
+    products = products.prefetch_related("aliases", "weight_profiles")[:20]
     return JsonResponse({"results": [{
         "id": product.id, "model_number": product.code, "name": product.name,
-        "material_id": product.material_id, "material": product.material.name if product.material else "",
-        "color_id": product.color_id, "color": product.color.code if product.color else "",
-        "weight": str(product.default_weight or ""), "unit_price": str(product.unit_price),
-        "loss_rate": str(product.default_loss_rate) if product.default_loss_rate is not None else None,
+        "material_id": None, "material": "", "color_id": None, "color": "",
+        "weight": "", "unit_price": str(product.unit_price), "loss_rate": None,
         "image_url": product.image.url if product.image else "",
         "aliases": list(product.aliases.values_list("alias", flat=True)),
         "weight_profiles": [{"material_id": p.material_id, "color_id": p.color_id, "weight": str(p.average_weight)} for p in product.weight_profiles.all()],
@@ -963,6 +1494,8 @@ def sales_list(request):
     if page_size not in {"30", "50", "100"}:
         page_size = "30"
     page_obj = Paginator(display_orders, int(page_size)).get_page(request.GET.get("page"))
+    page_query_params = request.GET.copy()
+    page_query_params.pop("page", None)
     return render(request, "erp/sales_list.html", {
         "items": page_obj.object_list, "page_obj": page_obj,
         "customers": Customer.objects.filter(customer_type="sales"), "materials": Material.objects.filter(active=True),
@@ -977,6 +1510,8 @@ def sales_list(request):
         "net_sales_pure": net_sales_pure, "net_sales_labor": net_sales_labor,
         "receivable_pure": receivable_pure, "receivable_labor": receivable_labor,
         "entry_type_summary": entry_type_summary.values(), "include_deleted": include_deleted,
+        "page_range": page_obj.paginator.get_elided_page_range(page_obj.number, on_each_side=2, on_ends=1),
+        "page_query": page_query_params.urlencode(),
     })
 
 

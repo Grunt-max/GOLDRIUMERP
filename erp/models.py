@@ -74,6 +74,22 @@ class Material(models.Model):
     def __str__(self):
         return self.name
 
+    @property
+    def is_gold_material(self):
+        return self.name.strip().upper() in {"14K", "18K", "24K"}
+
+    @property
+    def uses_loss_rate(self):
+        return self.name.strip().upper() in {"14K", "18K"}
+
+    def pure_gold_from(self, weight, loss_rate=Decimal("0")):
+        if not self.is_gold_material:
+            return Decimal("0")
+        multiplier = self.purity_rate
+        if self.uses_loss_rate:
+            multiplier *= Decimal("1") + Decimal(str(loss_rate or 0)) / Decimal("100")
+        return Decimal(str(weight or 0)) * multiplier
+
 
 class ProductColor(models.Model):
     code = models.CharField("색상코드", max_length=10, unique=True)
@@ -255,10 +271,9 @@ class Order(models.Model):
 
     def calculate_pure_gold_weight(self):
         total = self.total_weight
-        if not self.material or not self.material.apply_loss_rate:
+        if not self.material:
             return total.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
-        multiplier = self.material.purity_rate * (Decimal("1") + self.loss_rate / Decimal("100"))
-        return (total * multiplier).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+        return self.material.pure_gold_from(total, self.loss_rate).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
 
     def save(self, *args, **kwargs):
         if not self.transaction_no:
@@ -395,8 +410,48 @@ class GoldLedgerEntry(models.Model):
             self.actual_weight = Decimal("0")
             self.pure_gold_weight = Decimal("0")
         elif self.material:
-            self.pure_gold_weight = (self.actual_weight * self.material.purity_rate).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+            self.pure_gold_weight = self.material.pure_gold_from(self.actual_weight).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
         super().save(*args, **kwargs)
+
+
+class GoldPrice(models.Model):
+    MARKET_CHOICES = [("retail", "소매 시세"), ("wholesale", "도매 시세")]
+    market_type = models.CharField("시세 구분", max_length=10, choices=MARKET_CHOICES, default="retail")
+    price_date = models.DateField("시세 기준일", default=timezone.localdate)
+    source_price_per_gram = models.DecimalField("공식 기준가(원/g)", max_digits=14, decimal_places=0)
+    source_price_per_don = models.DecimalField("공식 기준가(원/돈)", max_digits=14, decimal_places=0, null=True, blank=True)
+    application_rate = models.DecimalField("적용률(%)", max_digits=6, decimal_places=2, default=Decimal("102.00"))
+    applied_price_per_gram = models.DecimalField("적용가(원/g)", max_digits=14, decimal_places=0, editable=False)
+    applied_price_per_don = models.DecimalField("적용가(원/돈)", max_digits=14, decimal_places=0, editable=False)
+    source_name = models.CharField("출처", max_length=100, default="삼성금거래소")
+    source_url = models.URLField("출처 URL", max_length=300, default="https://samsunggold.co.kr/some/")
+    collected_at = models.DateTimeField("수집 시각", default=timezone.now)
+    is_confirmed = models.BooleanField("관리자 확정", default=True)
+    memo = models.CharField("비고", max_length=200, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    updated_at = models.DateTimeField("수정 시각", auto_now=True)
+
+    class Meta:
+        ordering = ["-price_date", "-id"]
+        constraints = [models.UniqueConstraint(fields=["market_type", "price_date"], name="unique_gold_price_market_date")]
+
+    def save(self, *args, **kwargs):
+        rate = Decimal(str(self.application_rate))
+        source_price = Decimal(str(self.source_price_per_gram))
+        if self.market_type == "wholesale":
+            self.applied_price_per_gram = source_price.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            self.applied_price_per_don = (
+                Decimal(str(self.source_price_per_don)) if self.source_price_per_don is not None
+                else source_price * Decimal("3.75")
+            ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        else:
+            multiplier = rate / Decimal("100")
+            self.applied_price_per_gram = (source_price * multiplier / Decimal("1.1")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            self.applied_price_per_don = (self.applied_price_per_gram * Decimal("3.75")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.get_market_type_display()} {self.price_date}: {self.applied_price_per_gram:,.0f}원/g"
 
 
 class PurchaseSupplier(models.Model):
@@ -452,10 +507,9 @@ class PurchaseEntry(models.Model):
         ordering = ["-purchase_date", "-id"]
 
     def save(self, *args, **kwargs):
-        multiplier = self.material.purity_rate
-        if self.material.apply_loss_rate:
-            multiplier *= Decimal("1") + self.loss_rate / Decimal("100")
-        self.pure_gold_weight = (self.actual_weight * multiplier).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+        self.pure_gold_weight = self.material.pure_gold_from(
+            self.actual_weight, self.loss_rate
+        ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
         super().save(*args, **kwargs)
 
 
@@ -569,10 +623,9 @@ class SaleItem(models.Model):
         total = self.settlement_weight if self.settlement_weight is not None else self.total_weight
         if self.product_id and not self.product.weight_required:
             return Decimal("0.000")
-        if not self.material or not self.material.apply_loss_rate:
+        if not self.material:
             return total.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
-        multiplier = self.material.purity_rate * (Decimal("1") + self.loss_rate / Decimal("100"))
-        return (total * multiplier).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+        return self.material.pure_gold_from(total, self.loss_rate).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
 
     def save(self, *args, **kwargs):
         if self.product_id and not self.model_number:
@@ -587,3 +640,294 @@ class SaleItem(models.Model):
                 self.purchase_labor_amount = self.product.default_purchase_labor
         self.pure_gold_weight = self.calculate_pure_gold_weight()
         super().save(*args, **kwargs)
+
+
+class OpenMarketProduct(models.Model):
+    code = models.CharField("오픈마켓 상품번호", max_length=40, unique=True)
+    name = models.CharField("마스터 상품명", max_length=200)
+    brand = models.CharField("브랜드", max_length=100, blank=True)
+    category = models.CharField("공통 카테고리", max_length=100, blank=True)
+    model_name = models.CharField("모델명", max_length=100, blank=True)
+    manufacturer = models.CharField("제조사", max_length=100, blank=True)
+    origin_country = models.CharField("원산지", max_length=100, blank=True, default="대한민국")
+    description = models.TextField("상품 요약 설명", blank=True)
+    detail_page_html = models.TextField("상세페이지 HTML", blank=True)
+    common_attributes = models.JSONField("공통 상품 속성", default=dict, blank=True)
+    default_weight = models.DecimalField("기본 중량(g)", max_digits=12, decimal_places=3, null=True, blank=True)
+    base_labor_cost = models.DecimalField("기본 공임 원가", max_digits=14, decimal_places=0, default=0)
+    target_margin_rate = models.DecimalField("목표 마진율(%)", max_digits=6, decimal_places=2, default=30)
+    naver_fee_rate = models.DecimalField("네이버 예상 수수료율(%)", max_digits=6, decimal_places=2, default=6)
+    coupang_fee_rate = models.DecimalField("쿠팡 예상 수수료율(%)", max_digits=6, decimal_places=2, default=11)
+    image = models.FileField(
+        "대표사진", upload_to="open_market/products/", blank=True,
+        validators=[FileExtensionValidator(["jpg", "jpeg", "png", "webp", "gif"])],
+    )
+    active = models.BooleanField("운영 상품", default=False)
+    memo = models.TextField("메모", blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["code"]
+
+    def __str__(self):
+        return f"{self.code} · {self.name}"
+
+
+class OpenMarketChannelSetting(models.Model):
+    CHANNEL_CHOICES = [("naver", "네이버 스마트스토어"), ("coupang", "쿠팡")]
+    product = models.ForeignKey(OpenMarketProduct, on_delete=models.CASCADE, related_name="channel_settings")
+    channel = models.CharField("채널", max_length=20, choices=CHANNEL_CHOICES)
+    category_code = models.CharField("채널 카테고리 코드", max_length=100, blank=True)
+    channel_product_name = models.CharField("채널 전용 상품명", max_length=200, blank=True)
+    delivery_method = models.CharField("배송 방식", max_length=50, blank=True, default="DELIVERY")
+    delivery_company_code = models.CharField("택배사 코드", max_length=100, blank=True)
+    outbound_location_code = models.CharField("출고지 코드", max_length=100, blank=True)
+    return_center_code = models.CharField("반품지 코드", max_length=100, blank=True)
+    delivery_fee_type = models.CharField("배송비 유형", max_length=50, blank=True, default="FREE")
+    delivery_fee = models.DecimalField("배송비", max_digits=12, decimal_places=0, default=0)
+    return_fee = models.DecimalField("반품 배송비", max_digits=12, decimal_places=0, default=0)
+    notice_type = models.CharField("상품정보고시 유형", max_length=100, blank=True, default="JEWELLERY")
+    notice_data = models.JSONField("상품정보고시 상세", default=dict, blank=True)
+    extra_attributes = models.JSONField("채널 전용 속성", default=dict, blank=True)
+
+    class Meta:
+        ordering = ["product", "channel"]
+        constraints = [models.UniqueConstraint(fields=["product", "channel"], name="unique_open_market_channel_setting")]
+
+    def __str__(self):
+        return f"{self.product.code} / {self.get_channel_display()}"
+
+
+class OpenMarketProductImage(models.Model):
+    product = models.ForeignKey(OpenMarketProduct, on_delete=models.CASCADE, related_name="additional_images")
+    image = models.FileField(
+        "추가사진", upload_to="open_market/products/additional/",
+        validators=[FileExtensionValidator(["jpg", "jpeg", "png", "webp", "gif"])],
+    )
+    sort_order = models.PositiveSmallIntegerField("순서", default=0)
+
+    class Meta:
+        ordering = ["sort_order", "id"]
+
+
+class OpenMarketVariant(models.Model):
+    BASE_VARIANT_CHOICES = [
+        ("14KY", "14K 옐로우"), ("14KP", "14K 핑크"),
+        ("18KY", "18K 옐로우"), ("18KP", "18K 핑크"),
+        ("ETC", "기타"),
+    ]
+
+    product = models.ForeignKey(OpenMarketProduct, on_delete=models.CASCADE, related_name="variants")
+    sku = models.CharField("내부 SKU", max_length=100, unique=True)
+    base_variant = models.CharField("기본 변형", max_length=10, choices=BASE_VARIANT_CHOICES, default="ETC")
+    specifications = models.JSONField("세부 규격", default=dict, blank=True)
+    weight = models.DecimalField("기준 중량(g)", max_digits=12, decimal_places=3, null=True, blank=True)
+    labor_cost = models.DecimalField("공임 원가", max_digits=14, decimal_places=0, default=0)
+    active = models.BooleanField("사용", default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["product__code", "base_variant", "sku"]
+        constraints = [
+            models.UniqueConstraint(fields=["product", "base_variant", "specifications"], name="unique_open_market_variant_spec"),
+        ]
+
+    def __str__(self):
+        return self.sku
+
+    @property
+    def purity_rate(self):
+        return Decimal("0.585") if self.base_variant.startswith("14K") else Decimal("0.750") if self.base_variant.startswith("18K") else Decimal("1")
+
+    def cost_and_price(self, channel):
+        gold_price = GoldPrice.objects.filter(market_type="wholesale", is_confirmed=True).first()
+        weight = self.weight if self.weight is not None else self.product.default_weight
+        labor = self.labor_cost or self.product.base_labor_cost
+        if not gold_price or weight is None:
+            return {"gold_cost": None, "total_cost": None, "sale_price": None}
+        gold_cost = (weight * self.purity_rate * gold_price.applied_price_per_gram).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        total_cost = gold_cost + labor
+        fee = self.product.naver_fee_rate if channel == "naver" else self.product.coupang_fee_rate
+        denominator = Decimal("1") - ((fee + self.product.target_margin_rate) / Decimal("100"))
+        sale_price = None if denominator <= 0 else (total_cost / denominator / Decimal("1000")).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * Decimal("1000")
+        return {"gold_cost": gold_cost, "total_cost": total_cost, "sale_price": sale_price}
+
+
+class MarketplaceProduct(models.Model):
+    CHANNEL_CHOICES = [("naver", "네이버 스마트스토어"), ("coupang", "쿠팡")]
+
+    channel = models.CharField("오픈마켓", max_length=20, choices=CHANNEL_CHOICES, db_index=True)
+    external_product_id = models.CharField("오픈마켓 상품번호", max_length=100)
+    name = models.CharField("상품명", max_length=500)
+    status = models.CharField("판매상태", max_length=80, blank=True)
+    category_code = models.CharField("카테고리 코드", max_length=100, blank=True)
+    product_url = models.URLField("상품 주소", max_length=1000, blank=True)
+    image_url = models.URLField("대표 이미지", max_length=1000, blank=True)
+    sale_price = models.DecimalField("판매가", max_digits=14, decimal_places=0, null=True, blank=True)
+    option_count = models.PositiveIntegerField("옵션 수", default=0)
+    master_product = models.ForeignKey(
+        OpenMarketProduct, verbose_name="오픈마켓 마스터 상품", on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="marketplace_snapshots",
+    )
+    raw_data = models.JSONField("API 원본", default=dict, blank=True)
+    synced_at = models.DateTimeField("마지막 수집", auto_now=True)
+
+    class Meta:
+        ordering = ["channel", "name", "external_product_id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["channel", "external_product_id"], name="unique_marketplace_product"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.get_channel_display()} / {self.name}"
+
+    @staticmethod
+    def _market_decimal(value):
+        try:
+            return Decimal(str(value))
+        except (TypeError, ValueError, ArithmeticError):
+            return None
+
+    @property
+    def naver_channel_product(self):
+        search = self.raw_data.get("searchProduct", {}) if isinstance(self.raw_data, dict) else {}
+        channels = search.get("channelProducts", []) if isinstance(search, dict) else []
+        return channels[0] if isinstance(channels, list) and channels and isinstance(channels[0], dict) else {}
+
+    @property
+    def coupang_items(self):
+        if self.channel != "coupang" or not isinstance(self.raw_data, dict):
+            return []
+        items = self.raw_data.get("items", [])
+        return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+    @property
+    def display_price(self):
+        """Price shown before an option is selected (after immediate discount)."""
+        if self.channel == "coupang":
+            prices = [self._market_decimal(item.get("salePrice")) for item in self.coupang_items]
+            prices = [price for price in prices if price is not None]
+            return min(prices) if prices else self.sale_price
+        if self.channel != "naver":
+            return self.sale_price
+        channel_product = self.naver_channel_product
+        for key in ("discountedPrice", "mobileDiscountedPrice"):
+            price = self._market_decimal(channel_product.get(key))
+            if price is not None:
+                return price
+        origin = self.raw_data.get("originProduct", {}) if isinstance(self.raw_data, dict) else {}
+        base = self._market_decimal(origin.get("salePrice")) or self.sale_price
+        policy = origin.get("customerBenefit", {}).get("immediateDiscountPolicy", {})
+        method = policy.get("discountMethod", {}) if isinstance(policy, dict) else {}
+        value = self._market_decimal(method.get("value"))
+        if base is None or value is None:
+            return base
+        discount = base * value / Decimal("100") if method.get("unitType") == "PERCENT" else value
+        return max(Decimal("0"), base - discount)
+
+    @property
+    def option_additional_prices(self):
+        if self.channel != "naver" or not isinstance(self.raw_data, dict):
+            return []
+        origin = self.raw_data.get("originProduct", {})
+        option_info = origin.get("detailAttribute", {}).get("optionInfo", {}) if isinstance(origin, dict) else {}
+        combinations = option_info.get("optionCombinations", []) if isinstance(option_info, dict) else []
+        prices = []
+        for option in combinations if isinstance(combinations, list) else []:
+            if not isinstance(option, dict) or option.get("usable") is False:
+                continue
+            price = self._market_decimal(option.get("price"))
+            if price is not None:
+                prices.append(price)
+        return prices
+
+    @property
+    def option_display_price_min(self):
+        if self.channel == "coupang":
+            prices = [self._market_decimal(item.get("salePrice")) for item in self.coupang_items]
+            prices = [price for price in prices if price is not None]
+            return min(prices) if prices else self.display_price
+        prices = self.option_additional_prices
+        return self.display_price + min(prices) if self.display_price is not None and prices else self.display_price
+
+    @property
+    def option_display_price_max(self):
+        if self.channel == "coupang":
+            prices = [self._market_decimal(item.get("salePrice")) for item in self.coupang_items]
+            prices = [price for price in prices if price is not None]
+            return max(prices) if prices else self.display_price
+        prices = self.option_additional_prices
+        return self.display_price + max(prices) if self.display_price is not None and prices else self.display_price
+
+    @property
+    def option_price_limit(self):
+        return self.sale_price * Decimal("0.5") if self.channel == "naver" and self.sale_price is not None else None
+
+    @property
+    def option_price_rule_ok(self):
+        limit = self.option_price_limit
+        return limit is None or all(abs(price) <= limit for price in self.option_additional_prices)
+
+
+class OpenMarketChannelOffer(models.Model):
+    listing = models.ForeignKey(MarketplaceProduct, on_delete=models.CASCADE, related_name="normalized_offers")
+    master_variant = models.ForeignKey(
+        OpenMarketVariant, on_delete=models.SET_NULL, null=True, blank=True, related_name="channel_offers"
+    )
+    external_option_id = models.CharField("채널 옵션 ID", max_length=100)
+    option_name = models.CharField("채널 옵션명", max_length=500, blank=True)
+    original_price = models.DecimalField("정상가", max_digits=14, decimal_places=0, null=True, blank=True)
+    sale_price = models.DecimalField("판매가", max_digits=14, decimal_places=0, null=True, blank=True)
+    additional_price = models.DecimalField("옵션 추가금", max_digits=14, decimal_places=0, default=0)
+    display_price = models.DecimalField("최종 노출가", max_digits=14, decimal_places=0, null=True, blank=True)
+    stock_quantity = models.IntegerField("재고", null=True, blank=True)
+    sale_status = models.CharField("옵션 판매상태", max_length=50, blank=True)
+    raw_attributes = models.JSONField("원본 옵션 속성", default=dict, blank=True)
+    synced_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["listing", "option_name", "external_option_id"]
+        constraints = [
+            models.UniqueConstraint(fields=["listing", "external_option_id"], name="unique_market_channel_offer"),
+        ]
+
+
+class OpenMarketMatchCandidate(models.Model):
+    STATUS_CHOICES = [
+        ("pending", "확인 필요"), ("confirmed", "동일 상품"),
+        ("rejected", "다른 상품"), ("excluded", "제외"),
+    ]
+    naver_listing = models.ForeignKey(
+        MarketplaceProduct, on_delete=models.CASCADE, related_name="naver_match_candidates"
+    )
+    coupang_listing = models.ForeignKey(
+        MarketplaceProduct, on_delete=models.CASCADE, related_name="coupang_match_candidates"
+    )
+    name_score = models.DecimalField("상품명 유사도", max_digits=5, decimal_places=4, default=0)
+    image_score = models.DecimalField("사진 유사도", max_digits=5, decimal_places=4, null=True, blank=True)
+    option_score = models.DecimalField("옵션 유사도", max_digits=5, decimal_places=4, null=True, blank=True)
+    status = models.CharField("판정", max_length=20, choices=STATUS_CHOICES, default="pending")
+    reason = models.CharField("판정 근거", max_length=500, blank=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["status", "-name_score", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["naver_listing", "coupang_listing"], name="unique_open_market_match_pair"),
+        ]
+
+
+class UserAccessProfile(models.Model):
+    """Menu-level, read-only access granted to a non-master ERP account."""
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="erp_access_profile"
+    )
+    allowed_sections = models.JSONField("조회 가능 메뉴", default=list, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.user.username} 조회 권한"

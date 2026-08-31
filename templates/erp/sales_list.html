@@ -39,8 +39,10 @@
     <div class="legacy-actions"><b>✓ 체크된 것</b><button type="submit" formaction="{% url 'erp:sales_split' %}">거래번호 분리</button><button type="submit" formaction="{% url 'erp:sales_merge' %}">거래번호 통합</button><button type="button">거래처 변경</button><button type="button">거래구분 변경</button><button type="button">거래일 변경</button><button type="button">명세표 출력</button><button type="submit" class="return-button" formaction="{% url 'erp:sales_return' %}" onclick="return confirm('선택한 판매 품목을 오늘 날짜로 반품 처리할까요?')">반품</button><button type="submit" class="soft-delete-button" formaction="{% url 'erp:sales_soft_delete' %}" onclick="return confirm('선택한 판매 자료를 삭제 처리할까요?')">삭제</button></div>
   </form>
 
-  {% if page_obj.paginator.num_pages > 1 %}<nav class="legacy-pagination">
-    {% if page_obj.has_previous %}<a href="?page={{ page_obj.previous_page_number }}&start_date={{ start_date }}&end_date={{ end_date }}&customer={{ selected_customer }}&material={{ selected_material }}&status={{ selected_status }}&sort={{ selected_sort }}&page_size={{ page_size }}&q={{ query|urlencode }}{% if include_deleted %}&include_deleted=1{% endif %}">‹</a>{% endif %}<b>{{ page_obj.number }}</b>{% if page_obj.has_next %}<a href="?page={{ page_obj.next_page_number }}&start_date={{ start_date }}&end_date={{ end_date }}&customer={{ selected_customer }}&material={{ selected_material }}&status={{ selected_status }}&sort={{ selected_sort }}&page_size={{ page_size }}&q={{ query|urlencode }}{% if include_deleted %}&include_deleted=1{% endif %}">›</a>{% endif %}
+  {% if page_obj.paginator.num_pages > 1 %}<nav class="legacy-pagination" aria-label="판매 목록 페이지">
+    <span class="legacy-page-edge">{% if page_obj.has_previous %}<a class="legacy-page-prev" href="?{% if page_query %}{{ page_query }}&{% endif %}page={{ page_obj.previous_page_number }}">‹ 이전</a>{% else %}<i aria-hidden="true"></i>{% endif %}</span>
+    <span class="legacy-page-numbers">{% for number in page_range %}{% if number == page_obj.paginator.ELLIPSIS %}<i class="legacy-page-ellipsis">…</i>{% elif number == page_obj.number %}<b aria-current="page">{{ number }}</b>{% else %}<a href="?{% if page_query %}{{ page_query }}&{% endif %}page={{ number }}">{{ number }}</a>{% endif %}{% endfor %}</span>
+    <span class="legacy-page-edge">{% if page_obj.has_next %}<a class="legacy-page-next" href="?{% if page_query %}{{ page_query }}&{% endif %}page={{ page_obj.next_page_number }}">다음 ›</a>{% else %}<i aria-hidden="true"></i>{% endif %}</span>
   </nav>{% endif %}
 
   <div class="legacy-bottom-grid">

@@ -7,12 +7,30 @@ from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator
 from django.forms import BaseFormSet, formset_factory
 from django.utils import timezone
-from .models import CompanyProfile, Customer, DailyActivity, Factory, GoldLedgerEntry, Material, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, SaleItem, SaleTransaction
+from .models import CompanyProfile, Customer, DailyActivity, Factory, GoldLedgerEntry, GoldPrice, Material, OpenMarketChannelSetting, OpenMarketProduct, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, SaleItem, SaleTransaction
+
+
+class OpenMarketProductForm(forms.ModelForm):
+    class Meta:
+        model = OpenMarketProduct
+        fields = ("name", "brand", "model_name", "manufacturer", "origin_country", "category",
+                  "default_weight", "base_labor_cost", "target_margin_rate", "naver_fee_rate",
+                  "coupang_fee_rate", "description", "detail_page_html", "active")
+        widgets = {"description": forms.Textarea(attrs={"rows": 3}),
+                   "detail_page_html": forms.Textarea(attrs={"rows": 5})}
+
+
+class OpenMarketChannelSettingForm(forms.ModelForm):
+    class Meta:
+        model = OpenMarketChannelSetting
+        fields = ("category_code", "channel_product_name", "delivery_method", "delivery_company_code",
+                  "outbound_location_code", "return_center_code", "delivery_fee_type", "delivery_fee",
+                  "return_fee", "notice_type")
 
 
 QUICK_ORDER_PATTERN = re.compile(
     r"^\s*(14\s*k|18\s*k|24\s*k|925\s*silver)\s*"
-    r"([pgw]|핑크|옐로우|화이트)?\s+(.+?)\s+"
+    r"([pgwb]|핑크|옐로우|화이트|베이지)?\s+(.+?)\s+"
     r"(\d+(?:\.\d+)?\s*(?:cm|m))"
     r"(?:\s*(?:[xX*]\s*(\d+)|(\d+)\s*개))?\s*$",
     re.IGNORECASE,
@@ -21,7 +39,7 @@ QUICK_ORDER_PATTERN = re.compile(
 
 def parse_quick_order_lines(raw_text, default_quantity=1):
     parsed, invalid = [], []
-    color_names = {"P": "핑크", "G": "옐로우", "W": "화이트"}
+    color_names = {"P": "핑크", "G": "옐로우", "W": "화이트", "B": "베이지", "베이지": "베이지"}
     for line_number, source_line in enumerate(raw_text.splitlines(), 1):
         line = source_line.strip()
         if not line:
@@ -101,6 +119,13 @@ class FactoryForm(StyledForm):
     class Meta:
         model = Factory
         fields = ["name", "contact", "phone", "memo"]
+
+
+class GoldPriceForm(StyledForm):
+    class Meta:
+        model = GoldPrice
+        fields = ["market_type", "price_date", "source_price_per_gram", "source_price_per_don", "application_rate", "source_name", "source_url", "is_confirmed", "memo"]
+        widgets = {"price_date": forms.DateInput(attrs={"type": "date"})}
 
 
 class GoldLedgerEntryForm(StyledForm):
@@ -243,8 +268,8 @@ class ProductForm(StyledForm):
     class Meta:
         model = Product
         fields = [
-            "name", "code", "image", "material", "color", "default_weight", "default_loss_rate",
-            "unit_price", "production_source", "sales_unit", "weight_required", "purchase_supplier",
+            "name", "code", "image", "unit_price", "production_source", "sales_unit",
+            "weight_required", "purchase_supplier",
             "default_purchase_loss_rate", "default_purchase_labor", "stock_quantity", "active",
         ]
 
@@ -319,8 +344,6 @@ class OrderForm(StyledForm):
         product = Product.objects.filter(code__iexact=model_number, active=True).first()
         if product:
             cleaned["product"] = product
-            if not cleaned.get("material") and product.material_id:
-                cleaned["material"] = product.material
         else:
             cleaned["product"] = None
         raw = cleaned.get("raw_order_text") or ""
@@ -443,12 +466,7 @@ class SaleLineForm(forms.Form):
             product = alias.product if alias else None
         cleaned["catalog_product"] = product
         if product:
-            cleaned["material"] = cleaned.get("material") or product.material
-            cleaned["color"] = cleaned.get("color") or product.color
-            cleaned["weight"] = cleaned.get("weight") or product.default_weight
             cleaned["unit_price"] = cleaned.get("unit_price") or product.unit_price
-            if cleaned.get("loss_rate") is None and product.default_loss_rate is not None:
-                cleaned["loss_rate"] = product.default_loss_rate
         weight_required = not product or product.weight_required
         if cleaned.get("material") and cleaned["material"].name.lower() == "925 silver" and not product:
             weight_required = False

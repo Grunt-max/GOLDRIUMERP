@@ -1,0 +1,16 @@
+{% extends 'erp/base.html' %}{% load erp_numbers %}
+{% block title %}오픈마켓 아이템 조회/등록{% endblock %}
+{% block content %}
+<section class="market-page-head"><div><h2>아이템 조회/등록</h2><p>하나의 ERP 오픈마켓 Product ID 아래에 네이버와 쿠팡 상품을 연결합니다.</p></div><span>{{ previews|length }}개 마스터</span></section>
+<section class="market-master-list">
+{% for preview in previews %}
+<a class="market-master-row" href="{% url 'erp:marketplace_master_product_detail' preview.product.pk %}">
+  <div class="market-master-thumb">{% if preview.product.image %}<img src="{{ preview.product.image.url }}" alt="">{% elif preview.naver_listing.image_url %}<img src="{{ preview.naver_listing.image_url }}" alt="">{% elif preview.coupang_listing.image_url %}<img src="{{ preview.coupang_listing.image_url }}" alt="">{% else %}<span>NO IMAGE</span>{% endif %}</div>
+  <div class="market-master-main"><small>Product ID</small><b>{{ preview.product.code }}</b><strong>{{ preview.product.name }}</strong></div>
+  <div class="market-channel-brief naver"><small>네이버</small>{% if preview.naver_listing %}<b>{{ preview.naver_listing.display_price|erp_number:0 }}원</b><span>옵션 {{ preview.naver_listing.option_count }}개</span>{% else %}<span>미연결</span>{% endif %}</div>
+  <div class="market-channel-brief coupang"><small>쿠팡</small>{% if preview.coupang_listing %}<b>{{ preview.coupang_listing.display_price|erp_number:0 }}원</b><span>옵션 {{ preview.coupang_listing.option_count }}개</span>{% else %}<span>미연결</span>{% endif %}</div>
+  <span class="market-row-arrow">›</span>
+</a>
+{% empty %}<p class="empty">통합된 오픈마켓 상품이 없습니다. 네이버 또는 쿠팡 아이템 상세에서 마스터를 생성하세요.</p>{% endfor %}
+</section>
+{% endblock %}

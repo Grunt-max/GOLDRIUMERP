@@ -15,6 +15,7 @@ backups/
 *.log
 .env
 .env.*
+config/marketplace-secrets.ps1
 
 # Android / Gradle generated files
 android-app/.gradle/

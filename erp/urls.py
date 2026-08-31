@@ -4,6 +4,17 @@ from . import views
 app_name = "erp"
 urlpatterns = [
     path("", views.dashboard, name="dashboard"),
+    path("marketplaces/", views.marketplace_list, name="marketplace_list"),
+    path("marketplaces/master-products/", views.marketplace_master_products, name="marketplace_master_products"),
+    path("marketplaces/master-products/<int:pk>/", views.marketplace_master_product_detail, name="marketplace_master_product_detail"),
+    path("marketplaces/channels/<str:channel>/", views.marketplace_channel_items, name="marketplace_channel_items"),
+    path("marketplaces/sales/", views.marketplace_sales_overview, name="marketplace_sales_overview"),
+    path("marketplaces/products/<int:pk>/", views.marketplace_product_detail, name="marketplace_product_detail"),
+    path("marketplaces/products/<int:pk>/import/", views.marketplace_product_import, name="marketplace_product_import"),
+    path("marketplaces/<str:channel>/sync/", views.marketplace_sync, name="marketplace_sync"),
+    path("gold-prices/save/", views.gold_price_save, name="gold_price_save"),
+    path("gold-prices/", views.gold_price_list, name="gold_price_list"),
+    path("gold-prices/refresh/", views.gold_price_refresh, name="gold_price_refresh"),
     path("activities/", views.daily_activity_list, name="daily_activity_list"),
     path("activities/new/", views.daily_activity_create, name="daily_activity_create"),
     path("activities/<int:pk>/delete/", views.daily_activity_delete, name="daily_activity_delete"),

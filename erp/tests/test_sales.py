@@ -1,13 +1,17 @@
 from decimal import Decimal
 from datetime import date, timedelta
+from io import BytesIO
+from tempfile import TemporaryDirectory
 
-from django.test import TestCase
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import TestCase, override_settings
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 from django.utils import timezone
+from PIL import Image
 
 from erp.forms import SaleLineForm
-from erp.models import CompanyProfile, Customer, DailyActivity, Factory, GoldLedgerEntry, Material, Order, Product, ProductAlias, ProductColor, ProductWeightProfile, PurchaseEntry, PurchaseSupplier, SaleItem, SaleTransaction, generate_transaction_no
+from erp.models import CompanyProfile, Customer, DailyActivity, Factory, GoldLedgerEntry, GoldPrice, Material, Order, Product, ProductAlias, ProductColor, ProductWeightProfile, PurchaseEntry, PurchaseSupplier, SaleItem, SaleTransaction, UserAccessProfile, generate_transaction_no
 from erp.product_catalog import rebuild_product_weight_profiles
 from erp.views import monthly_sales_metrics
 
@@ -31,6 +35,18 @@ class SaleStructureTests(TestCase):
         session["basic_management_verified_user_id"] = self.user.pk
         session.save()
 
+    def test_newly_uploaded_product_image_is_downsized_before_storage(self):
+        source = BytesIO()
+        Image.new("RGB", (3200, 2400), (180, 140, 90)).save(source, format="PNG")
+        upload = SimpleUploadedFile("large-photo.png", source.getvalue(), content_type="image/png")
+        with TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            product = Product.objects.create(
+                name="다운사이징 테스트", code="RESIZE-001", unit_price=0, image=upload,
+            )
+            with Image.open(product.image.path) as stored:
+                self.assertLessEqual(max(stored.size), 1600)
+                self.assertEqual(stored.size, (1600, 1200))
+                self.assertEqual(stored.format, "JPEG")
     def test_erp_requires_login(self):
         self.client.logout()
         response = self.client.get(reverse("erp:dashboard"))
@@ -65,24 +81,64 @@ class SaleStructureTests(TestCase):
         self.assertEqual(self.client.get(reverse("basic_management_login")).status_code, 403)
         self.assertEqual(self.client.get(reverse("erp:material_list")).status_code, 403)
 
+    def test_master_can_create_employee_with_selected_view_permissions(self):
+        page = self.client.get(reverse("access_management"))
+        self.assertContains(page, "직원 조회 계정 관리")
+        response = self.client.post(reverse("access_management"), {
+            "action": "create", "create-username": "viewer",
+            "create-password1": "Strong-view-pass-426!", "create-password2": "Strong-view-pass-426!",
+            "sections": ["orders", "activities"],
+        })
+        self.assertRedirects(response, reverse("access_management"))
+        employee = get_user_model().objects.get(username="viewer")
+        self.assertEqual(employee.erp_access_profile.allowed_sections, ["orders", "activities"])
+        self.assertFalse(employee.is_staff)
+
+    def test_employee_is_limited_to_granted_read_only_pages(self):
+        employee = get_user_model().objects.create_user(username="viewer", password="employee-pass-426!")
+        UserAccessProfile.objects.create(user=employee, allowed_sections=["orders"])
+        self.client.force_login(employee)
+        self.assertEqual(self.client.get(reverse("erp:order_list")).status_code, 200)
+        self.assertEqual(self.client.get(reverse("erp:sales_list")).status_code, 403)
+        self.assertEqual(self.client.post(reverse("erp:order_create"), {}).status_code, 403)
+        self.assertEqual(self.client.get(reverse("access_management")).status_code, 403)
+
     def test_material_weight_formulas(self):
         sale = SaleTransaction.objects.create(customer=self.customer)
         expected = {
             self.material_14: Decimal("1.193"),
             self.material_18: Decimal("1.530"),
             self.material_24: Decimal("2.000"),
-            self.material_silver: Decimal("2.000"),
+            self.material_silver: Decimal("0.000"),
         }
         for index, (material, pure_weight) in enumerate(expected.items()):
             item = SaleItem.objects.create(transaction=sale, model_number=f"M-{index}", material=material, color=self.color_p, weight=Decimal("2"), quantity=2, loss_rate=Decimal("2"), unit_price=1000)
             self.assertEqual(item.pure_gold_weight, pure_weight)
+
+    def test_gold_statistics_include_24k_but_exclude_silver_and_loss_is_14k_18k_only(self):
+        sale = SaleTransaction.objects.create(customer=self.customer, sale_date=timezone.localdate())
+        SaleItem.objects.create(
+            transaction=sale, model_number="GOLD-24", material=self.material_24,
+            weight=Decimal("3"), quantity=1, loss_rate=Decimal("9"), unit_price=0,
+        )
+        silver = SaleItem.objects.create(
+            transaction=sale, model_number="SILVER", material=self.material_silver,
+            weight=Decimal("10"), quantity=1, loss_rate=Decimal("10"), unit_price=5000,
+        )
+        sale.refresh_totals()
+        metrics = monthly_sales_metrics(timezone.localdate().year, timezone.localdate().month)
+        self.assertEqual(silver.pure_gold_weight, Decimal("0.000"))
+        self.assertEqual(metrics["base_gold"], Decimal("3.000"))
+        self.assertEqual(metrics["loss_gold"], Decimal("0.0000"))
+        self.assertEqual(metrics["total_gold"], Decimal("3.000"))
+        self.assertEqual(metrics["labor"], Decimal("5000"))
 
     def test_multiple_items_share_one_transaction_and_catalog_matches(self):
         data = {
             "header-customer": self.customer.pk, "header-ordered_at": "2026-08-20", "header-status": "new",
             "header-memo": "거래 비고",
             "lines-TOTAL_FORMS": "2", "lines-INITIAL_FORMS": "0", "lines-MIN_NUM_FORMS": "1", "lines-MAX_NUM_FORMS": "1000",
-            "lines-0-entry_type": "sale", "lines-0-model_number": "CAT-001", "lines-0-material": "", "lines-0-color": "", "lines-0-weight": "", "lines-0-loss_rate": "", "lines-0-quantity": "2", "lines-0-unit_price": "", "lines-0-memo": "",
+            "lines-0-entry_type": "sale", "lines-0-model_number": "CAT-001", "lines-0-material": self.material_14.pk, "lines-0-color": self.color_p.pk, "lines-0-weight": "2.000", "lines-0-loss_rate": "3", "lines-0-quantity": "2", "lines-0-unit_price": "", "lines-0-memo": "",
             "lines-1-entry_type": "payment", "lines-1-model_number": "", "lines-1-material": self.material_18.pk, "lines-1-color": "", "lines-1-weight": "1.000", "lines-1-loss_rate": "", "lines-1-quantity": "1", "lines-1-unit_price": "500", "lines-1-memo": "",
         }
         response = self.client.post(reverse("erp:sale_create"), data)
@@ -150,8 +206,8 @@ class SaleStructureTests(TestCase):
             "_popup": "1",
             "header-customer": self.customer.pk, "header-ordered_at": "2026-08-22", "header-status": "new", "header-memo": "",
             "lines-TOTAL_FORMS": "1", "lines-INITIAL_FORMS": "0", "lines-MIN_NUM_FORMS": "0", "lines-MAX_NUM_FORMS": "1000",
-            "lines-0-entry_type": "sale", "lines-0-model_number": "CAT-001", "lines-0-material": "", "lines-0-color": "",
-            "lines-0-weight": "", "lines-0-loss_rate": "", "lines-0-quantity": "1.25", "lines-0-unit_price": "", "lines-0-memo": "",
+            "lines-0-entry_type": "sale", "lines-0-model_number": "CAT-001", "lines-0-material": self.material_14.pk, "lines-0-color": self.color_p.pk,
+            "lines-0-weight": "2.000", "lines-0-loss_rate": "3", "lines-0-quantity": "1.25", "lines-0-unit_price": "", "lines-0-memo": "",
         }
         response = self.client.post(reverse("erp:sale_create"), data)
         self.assertEqual(response.status_code, 200)
@@ -245,8 +301,8 @@ class SaleStructureTests(TestCase):
         response = self.client.post(reverse("erp:sale_create"), {
             "header-customer": self.customer.pk, "header-ordered_at": "2026-08-21", "header-status": "new", "header-memo": "",
             "lines-TOTAL_FORMS": "1", "lines-INITIAL_FORMS": "0", "lines-MIN_NUM_FORMS": "0", "lines-MAX_NUM_FORMS": "1000",
-            "lines-0-entry_type": "sale", "lines-0-model_number": "CAT-001", "lines-0-material": "", "lines-0-color": "",
-            "lines-0-weight": "", "lines-0-loss_rate": "", "lines-0-quantity": "1", "lines-0-unit_price": "", "lines-0-memo": "",
+            "lines-0-entry_type": "sale", "lines-0-model_number": "CAT-001", "lines-0-material": self.material_14.pk, "lines-0-color": self.color_p.pk,
+            "lines-0-weight": "2.000", "lines-0-loss_rate": "3", "lines-0-quantity": "1", "lines-0-unit_price": "", "lines-0-memo": "",
         })
         self.assertRedirects(response, reverse("erp:sales_list"))
         sold_item = SaleItem.objects.get(entry_type="sale")
@@ -329,6 +385,31 @@ class SaleStructureTests(TestCase):
         response = self.client.get(reverse("erp:receivables_list"))
         self.assertContains(response, self.customer.name)
 
+    def test_receivables_and_advances_are_reported_separately_without_netting_customers(self):
+        due_sale = SaleTransaction.objects.create(customer=self.customer)
+        SaleItem.objects.create(
+            transaction=due_sale, entry_type="sale", model_number="DUE",
+            material=self.material_24, weight=Decimal("1.000"), quantity=1,
+            loss_rate=0, unit_price=1000,
+        )
+        due_sale.refresh_totals()
+        advance_customer = Customer.objects.create(name="선입거래처", customer_type="sales")
+        advance_sale = SaleTransaction.objects.create(customer=advance_customer)
+        SaleItem.objects.create(
+            transaction=advance_sale, entry_type="payment", model_number="",
+            material=self.material_24, weight=Decimal("2.000"), quantity=1,
+            loss_rate=0, unit_price=2000,
+        )
+        advance_sale.refresh_totals()
+
+        response = self.client.get(reverse("erp:receivables_list"))
+        self.assertEqual(response.context["totals"]["gold_due"], Decimal("1.000"))
+        self.assertEqual(response.context["totals"]["gold_advance"], Decimal("2.000"))
+        self.assertEqual(response.context["totals"]["labor_due"], Decimal("1000"))
+        self.assertEqual(response.context["totals"]["labor_advance"], Decimal("2000"))
+        self.assertContains(response, "미수 거래처")
+        self.assertContains(response, "선입 거래처")
+
     def test_legacy_adjustments_settle_gold_and_signed_labor(self):
         sale = SaleTransaction.objects.create(customer=self.customer)
         SaleItem.objects.create(
@@ -410,6 +491,31 @@ class SaleStructureTests(TestCase):
         self.assertContains(popup, "1.3mm로프")
         self.assertContains(popup, "3M")
         self.assertContains(popup, "5M")
+
+    def test_quick_order_explicit_material_is_not_overwritten_by_catalog_default(self):
+        Product.objects.create(
+            name="1.3mm 기본 제품", code="1.3mm", material=self.material_14,
+            color=self.color_p, default_weight=Decimal("1.000"), unit_price=1000,
+        )
+        response = self.client.post(reverse("erp:order_create"), {
+            "source_type": "quick", "ordered_at": "2026-08-24", "due_date": "",
+            "customer": self.customer.pk, "model_number": "",
+            "raw_order_text": "18kw 1.3mm 5M", "material": "", "color": "",
+            "delivery_type": "semi", "length_spec": "", "option_detail": "",
+            "quantity": "1", "status": "new", "memo": "",
+        })
+        self.assertRedirects(response, reverse("erp:order_list"))
+        order = Order.objects.get(raw_order_text="18kw 1.3mm 5M")
+        self.assertEqual(order.material, self.material_18)
+        self.assertEqual(order.color, "화이트")
+        self.assertEqual(order.quantity, Decimal("5.00"))
+
+    def test_quick_order_accepts_beige_as_korean_or_b_code(self):
+        from erp.forms import parse_quick_order_lines
+        parsed, invalid = parse_quick_order_lines("18K 베이지 코코체인 10M\n18K B 사볼대 5M")
+        self.assertEqual(invalid, [])
+        self.assertEqual([row["color"] for row in parsed], ["베이지", "베이지"])
+        self.assertEqual([row["quantity"] for row in parsed], [Decimal("10"), Decimal("5")])
 
     def test_individual_order_item_can_be_completed_and_filtered(self):
         first = Order.objects.create(
@@ -504,14 +610,19 @@ class SaleStructureTests(TestCase):
         self.assertContains(home, overdue.model_number)
         self.assertNotContains(home, ">None<")
         self.assertContains(home, "최근 결제 내역")
+        self.assertNotContains(home, 'dashboard-business" open')
         self.assertNotContains(home, "최근 주문")
         self.assertContains(home, "미수금")
         self.assertContains(home, "미수공임")
 
     def test_monthly_gold_metrics_and_daily_activity_calendar(self):
+        GoldPrice.objects.create(
+            market_type="wholesale", price_date=timezone.localdate(),
+            source_price_per_gram=Decimal("100000"), source_price_per_don=Decimal("375000"),
+        )
         daily_order = Order.objects.create(
             customer=self.customer, model_number="DAILY-ORDER", material=self.material_18,
-            ordered_at=date(2026, 8, 22), quantity=1, unit_price=0,
+            color="화이트", ordered_at=date(2026, 8, 22), quantity=1, unit_price=0,
         )
         sale = SaleTransaction.objects.create(customer=self.customer, sale_date=date(2026, 8, 10))
         item = SaleItem.objects.create(
@@ -525,17 +636,41 @@ class SaleStructureTests(TestCase):
         self.assertEqual(home.context["month_metrics"]["loss_gold"], Decimal("0.8775"))
         self.assertEqual(home.context["month_metrics"]["total_gold"], Decimal("18.428"))
         self.assertEqual(home.context["month_metrics"]["labor"], Decimal("10000"))
+        self.assertEqual(home.context["wholesale_loss_value"], Decimal("87750"))
+        self.assertContains(home, "(87,750원)")
+        self.assertContains(home, "현재 도매 시세 기준 환산액")
         self.assertContains(home, "8월 전체 순금 매출")
-        self.assertContains(home, reverse("erp:monthly_customer_sales"), count=3)
+        self.assertContains(home, reverse("erp:monthly_customer_sales"), count=4)
         self.assertContains(home, "dashboard-arrow", count=4)
         monthly_page = self.client.get(reverse("erp:monthly_customer_sales"))
-        self.assertContains(monthly_page, "2026년 8월 거래처별 매출")
+        self.assertContains(monthly_page, "2026년 08월 ~ 2026년 08월 거래처별 매출")
+        self.assertEqual(monthly_page.context["period_end"], timezone.localdate())
+        self.assertContains(monthly_page, "현재월은 오늘까지")
         self.assertContains(monthly_page, self.customer.name)
         self.assertEqual(monthly_page.context["rows"][0]["total_gold"], Decimal("18.4275"))
-        self.assertContains(monthly_page, "전체 순금순")
+        self.assertContains(monthly_page, "0.88g")
+        self.assertContains(monthly_page, "(87,750원)")
+        self.assertContains(monthly_page, "전체 순금 매출")
+        self.assertContains(monthly_page, 'class="monthly-sort-link', count=5)
+        self.assertNotContains(monthly_page, ">수량<")
         sorted_page = self.client.get(reverse("erp:monthly_customer_sales"), {"month": "2026-08", "sort": "labor"})
         self.assertEqual(sorted_page.context["selected_sort"], "labor")
-        self.assertContains(sorted_page, "매출 공임순")
+        self.assertContains(sorted_page, "매출 공임")
+        july_sale = SaleTransaction.objects.create(customer=self.customer, sale_date=date(2026, 7, 15))
+        SaleItem.objects.create(
+            transaction=july_sale, entry_type="sale", model_number="JULY-14K",
+            material=self.material_14, weight=Decimal("10"), quantity=1,
+            loss_rate=Decimal("5"), unit_price=5000,
+        )
+        july_sale.refresh_totals()
+        range_page = self.client.get(reverse("erp:monthly_customer_sales"), {
+            "start_month": "2026-07", "end_month": "2026-08",
+        })
+        self.assertEqual(range_page.context["period_start"], date(2026, 7, 1))
+        self.assertEqual(range_page.context["period_end"], timezone.localdate())
+        self.assertEqual(range_page.context["totals"]["quantity"], Decimal("2"))
+        self.assertEqual(range_page.context["totals"]["loss_value"], Decimal("117000"))
+        self.assertContains(range_page, "2026년 07월 ~ 2026년 08월 거래처별 매출")
         response = self.client.post(reverse("erp:daily_activity_create"), {
             "activity_date": "2026-08-22", "content": "샘플 제작 및 출고 확인",
         })
@@ -544,6 +679,7 @@ class SaleStructureTests(TestCase):
         activity_page = self.client.get(reverse("erp:daily_activity_list"), {"date": "2026-08-22", "month": "2026-08"})
         self.assertContains(activity_page, "샘플 제작 및 출고 확인")
         self.assertContains(activity_page, daily_order.model_number)
+        self.assertContains(activity_page, f"{self.material_18.name} · 화이트 · {daily_order.model_number}")
         self.assertContains(activity_page, 'name="images"')
         self.assertContains(activity_page, 'enctype="multipart/form-data"')
         sale_day_page = self.client.get(reverse("erp:daily_activity_list"), {"date": "2026-08-10", "month": "2026-08"})

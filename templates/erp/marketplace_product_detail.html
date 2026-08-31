@@ -1,0 +1,33 @@
+{% extends 'erp/base.html' %}{% load erp_numbers %}
+{% block title %}오픈마켓 상품 상세{% endblock %}
+{% block content %}
+<section class="market-detail-head">
+  <a class="market-back-link" href="{% url 'erp:marketplace_channel_items' product.channel %}">‹ {{ product.get_channel_display }} 상품 목록</a>
+  <div class="market-detail-product">{% if product.image_url %}<img src="{{ product.image_url }}" alt="{{ product.name }}">{% endif %}<div><span class="market-badge {{ product.channel }}">{{ product.get_channel_display }}</span><h2>{{ product.name }}</h2><p>상품번호 {{ product.external_product_id }} · {{ product.status|default:'상태 정보 없음' }}</p>{% if product.product_url %}<a href="{{ product.product_url }}" target="_blank" rel="noopener">스마트스토어 상품 확인 ↗</a>{% endif %}</div></div>
+</section>
+<section class="market-import-panel">
+  <header><div><b>오픈마켓 마스터 상품화</b><small>B2B 상품과 분리된 오픈마켓 마스터 초안으로 역등록합니다.</small></div>{% if product.master_product %}<span class="master-ready">연결됨 · {{ product.master_product.code }}</span>{% endif %}</header>
+  {% if product.master_product %}
+  <div class="market-linked-master">{% if product.master_product.image %}<img src="{{ product.master_product.image.url }}" alt="{{ product.master_product.code }}">{% endif %}<div><b>{{ product.master_product.code }} · {{ product.master_product.name }}</b><p>오픈마켓 전용 사진·중량·공임을 기준으로 네이버와 쿠팡 데이터를 가공합니다.</p><a href="{% url 'erp:marketplace_master_products' %}">오픈마켓 마스터 확인 ›</a></div></div>
+  {% else %}
+  <div class="market-import-actions">
+    <form method="post" action="{% url 'erp:marketplace_product_import' product.pk %}">{% csrf_token %}<input type="hidden" name="action" value="create"><h3>새 오픈마켓 마스터 초안</h3><label>오픈마켓 상품번호<input name="code" value="{{ suggested_code }}" maxlength="40" required></label><label>상품명<input name="name" value="{{ product.name }}" maxlength="120" required></label><button type="submit">사진과 함께 상품화</button><small>판매중지 초안과 14KY·14KP·18KY·18KP 옵션이 생성됩니다.</small></form>
+    <form method="post" action="{% url 'erp:marketplace_product_import' product.pk %}">{% csrf_token %}<input type="hidden" name="action" value="link"><h3>기존 오픈마켓 마스터에 연결</h3><label>오픈마켓 마스터<select name="master_product" required><option value="">선택하세요</option>{% for master in master_products %}<option value="{{ master.pk }}">{{ master.code }} · {{ master.name }}</option>{% endfor %}</select></label><button type="submit">기존 상품에 연결</button><small>동일한 네이버·쿠팡 상품은 같은 오픈마켓 마스터에 연결하세요.</small></form>
+  </div>
+  {% endif %}
+</section>
+<section class="market-price-summary">
+  <article><small>판매가(할인 전)</small><b>{% if product.sale_price != None %}{{ product.sale_price|erp_number:0 }}원{% else %}-{% endif %}</b></article>
+  <article><small>즉시 할인액</small><b>{% if discount_amount != None %}− {{ discount_amount|erp_number:0 }}원{% else %}-{% endif %}</b></article>
+  <article class="highlight"><small>기본 노출가</small><b>{% if product.display_price != None %}{{ product.display_price|erp_number:0 }}원{% else %}-{% endif %}</b></article>
+  <article><small>옵션 노출가 범위</small><b>{% if product.option_display_price_min != None %}{{ product.option_display_price_min|erp_number:0 }} ~ {{ product.option_display_price_max|erp_number:0 }}원{% else %}-{% endif %}</b></article>
+</section>
+<section class="rium-box market-option-detail">
+  <header><div><h3>옵션 {{ options|length }}개</h3><p>{% if product.channel == 'naver' %}최종 노출가 = 기본 노출가 + 옵션 추가금{% else %}쿠팡은 각 vendorItemId가 독립된 판매가를 가집니다.{% endif %}</p></div>{% if product.option_price_limit != None %}<span class="option-limit-summary">판매가 기준 옵션 추가금 허용 범위: ±{{ product.option_price_limit|erp_number:0 }}원</span>{% endif %}</header>
+  <div class="rium-table-wrap"><table><thead><tr><th>No.</th><th>유형</th><th>옵션 ID</th><th>옵션 조합</th><th>{% if product.channel == 'naver' %}추가금{% else %}최저가 대비{% endif %}</th><th>최종 노출가</th><th>재고</th><th>상태</th>{% if product.channel == 'naver' %}<th>50% 규정</th>{% endif %}</tr></thead><tbody>
+  {% for option in options %}<tr><td>{{ option.number }}</td><td><span class="option-type">{{ option.type }}</span></td><td>{{ option.external_id|default:'-' }}</td><td class="option-combination-name"><b>{{ option.name }}</b>{% if option.attributes and option.attributes != option.name %}<small>{{ option.attributes }}</small>{% endif %}</td><td class="num">{% if option.additional_price > 0 %}+{% endif %}{{ option.additional_price|erp_number:0 }}원</td><td class="num option-final-price">{% if option.display_price != None %}<b>{{ option.display_price|erp_number:0 }}원</b>{% else %}-{% endif %}{% if product.channel == 'coupang' and option.original_price != None %}<small>정상가 {{ option.original_price|erp_number:0 }}원</small>{% endif %}</td><td class="num">{{ option.stock|default_if_none:'-' }}</td><td>{% if option.usable == None %}<span class="option-unknown">판매상태 미조회</span>{% elif option.usable %}<span class="option-ok">{{ option.status|default:'SALE' }}</span>{% else %}<span class="option-disabled">{{ option.status|default:'중지' }}</span>{% endif %}</td>{% if product.channel == 'naver' %}<td>{% if option.rule_ok %}<span class="option-ok">정상</span>{% else %}<span class="option-warning">초과</span>{% endif %}</td>{% endif %}</tr>
+  {% empty %}<tr><td colspan="9" class="empty">API에서 확인된 옵션 데이터가 없습니다.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+<p class="market-readonly-footnote">읽기 전용 데이터입니다. 이 화면에서는 스마트스토어의 가격이나 옵션을 변경하지 않습니다.</p>
+{% endblock %}

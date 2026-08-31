@@ -1,0 +1,6 @@
+<nav class="market-subnav">
+  <a class="{% if request.resolver_match.url_name == 'marketplace_list' or request.resolver_match.url_name == 'marketplace_master_products' or request.resolver_match.url_name == 'marketplace_master_product_detail' %}active{% endif %}" href="{% url 'erp:marketplace_list' %}"><b>1</b> 아이템 조회/등록</a>
+  <a class="{% if request.resolver_match.url_name == 'marketplace_channel_items' and channel_key == 'naver' %}active{% endif %}" href="{% url 'erp:marketplace_channel_items' 'naver' %}"><b>2</b> 네이버 아이템 조회</a>
+  <a class="{% if request.resolver_match.url_name == 'marketplace_channel_items' and channel_key == 'coupang' %}active{% endif %}" href="{% url 'erp:marketplace_channel_items' 'coupang' %}"><b>3</b> 쿠팡 아이템 조회</a>
+  <a class="{% if request.resolver_match.url_name == 'marketplace_sales_overview' %}active{% endif %}" href="{% url 'erp:marketplace_sales_overview' %}"><b>4</b> 채널별 매출 확인</a>
+</nav>

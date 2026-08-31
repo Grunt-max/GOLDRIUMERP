@@ -6,11 +6,12 @@ from django.conf.urls.static import static
 from django.contrib.auth.decorators import login_required
 from django.views.static import serve as media_serve
 from django.urls import re_path
-from .views import ERPLoginView, basic_management_login, initial_admin_setup
+from .views import ERPLoginView, access_management, basic_management_login, initial_admin_setup
 
 urlpatterns = [
     path("login/", ERPLoginView.as_view(), name="login"),
     path("basic-management/login/", basic_management_login, name="basic_management_login"),
+    path("access-management/", access_management, name="access_management"),
     path("setup/", initial_admin_setup, name="initial_admin_setup"),
     path("logout/", auth_views.LogoutView.as_view(), name="logout"),
     path("admin/", admin.site.urls),

@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect Goldrium ERP gold prices every four hours
+
+[Timer]
+OnCalendar=*-*-* 00,04,08,12,16,20:10:00 Asia/Seoul
+Persistent=true
+RandomizedDelaySec=300
+Unit=goldrium-gold-prices.service
+
+[Install]
+WantedBy=timers.target

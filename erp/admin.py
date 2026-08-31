@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, DailySaleSequence, Factory, GoldLedgerEntry, Material, Order, Product, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, SaleItem, SaleTransaction
+from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, DailySaleSequence, Factory, GoldLedgerEntry, GoldPrice, MarketplaceProduct, Material, OpenMarketChannelOffer, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketProductImage, OpenMarketVariant, Order, Product, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, SaleItem, SaleTransaction
 
 
 @admin.register(Material)
@@ -78,6 +78,56 @@ class FactoryAdmin(admin.ModelAdmin):
 class GoldLedgerEntryAdmin(admin.ModelAdmin):
     list_display = ("entry_date", "factory", "entry_type", "material", "actual_weight", "pure_gold_weight", "cash_amount", "is_deleted")
     list_filter = ("entry_type", "entry_date", "factory", "is_deleted")
+
+
+@admin.register(GoldPrice)
+class GoldPriceAdmin(admin.ModelAdmin):
+    list_display = ("market_type", "price_date", "source_price_per_gram", "application_rate", "applied_price_per_gram", "applied_price_per_don", "is_confirmed", "collected_at")
+    list_filter = ("market_type", "is_confirmed", "source_name")
+
+
+@admin.register(MarketplaceProduct)
+class MarketplaceProductAdmin(admin.ModelAdmin):
+    list_display = ("channel", "external_product_id", "name", "master_product", "status", "sale_price", "option_count", "synced_at")
+    list_filter = ("channel", "status")
+    search_fields = ("external_product_id", "name")
+    readonly_fields = ("channel", "external_product_id", "name", "status", "category_code", "product_url", "image_url", "sale_price", "option_count", "raw_data", "synced_at")
+
+
+class OpenMarketVariantInline(admin.TabularInline):
+    model = OpenMarketVariant
+    extra = 0
+
+
+class OpenMarketProductImageInline(admin.TabularInline):
+    model = OpenMarketProductImage
+    extra = 0
+
+
+class OpenMarketChannelSettingInline(admin.StackedInline):
+    model = OpenMarketChannelSetting
+    extra = 0
+
+
+@admin.register(OpenMarketProduct)
+class OpenMarketProductAdmin(admin.ModelAdmin):
+    list_display = ("code", "name", "brand", "category", "active", "updated_at")
+    list_filter = ("active", "category")
+    search_fields = ("code", "name", "brand")
+    inlines = (OpenMarketVariantInline, OpenMarketChannelSettingInline, OpenMarketProductImageInline)
+
+
+@admin.register(OpenMarketChannelOffer)
+class OpenMarketChannelOfferAdmin(admin.ModelAdmin):
+    list_display = ("listing", "external_option_id", "option_name", "display_price", "sale_status", "synced_at")
+    list_filter = ("listing__channel", "sale_status")
+    search_fields = ("listing__name", "external_option_id", "option_name")
+
+
+@admin.register(OpenMarketMatchCandidate)
+class OpenMarketMatchCandidateAdmin(admin.ModelAdmin):
+    list_display = ("naver_listing", "coupang_listing", "name_score", "status")
+    list_filter = ("status",)
 
 
 @admin.register(PurchaseSupplier)

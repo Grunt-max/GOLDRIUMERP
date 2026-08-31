@@ -77,10 +77,34 @@ def rebuild_product_weight_profiles():
     product_lookup = {}
     for product in products:
         product_lookup[product.code.casefold()] = product
+        product_lookup[product.name.casefold()] = product
         product_lookup[canonical_product_code(product.code).casefold()] = product
         for alias in product.aliases.all():
             product_lookup[alias.alias.casefold()] = product
             product_lookup[canonical_product_code(alias.alias).casefold()] = product
+
+    # Catalog products can be registered after legacy sales were imported.
+    # Link exact code/name matches without changing weights or financial data.
+    for item in SaleItem.objects.filter(product__isnull=True, entry_type="sale", is_deleted=False):
+        product = product_lookup.get(item.model_number.strip().casefold()) or product_lookup.get(
+            canonical_product_code(item.model_number).casefold()
+        )
+        if product:
+            item.product = product
+            item.save(update_fields=["product"])
+
+    # Rebuild both an all-colors material average and color-specific averages.
+    sale_groups.clear()
+    sale_items = SaleItem.objects.filter(
+        entry_type="sale", is_deleted=False, transaction__status__in=("new", "done"),
+        product__isnull=False, material__isnull=False, weight__gt=0, quantity__gt=0,
+    ).select_related("product", "material", "color")
+    for item in sale_items:
+        for color_id in {item.color_id, None}:
+            key = (item.product_id, item.material_id, color_id)
+            sale_groups[key]["weight"] += item.weight
+            sale_groups[key]["units"] += item.quantity
+            sale_groups[key]["rows"] += 1
 
     purchase_groups = defaultdict(lambda: {"weight": Decimal("0"), "units": Decimal("0"), "rows": 0})
     legacy_purchase_items = SaleItem.objects.filter(
@@ -128,15 +152,6 @@ def rebuild_product_weight_profiles():
         ))
     ProductWeightProfile.objects.bulk_create(profiles)
 
-    for product in Product.objects.prefetch_related("weight_profiles"):
-        candidates = list(product.weight_profiles.all())
-        if not candidates:
-            continue
-        matching = [p for p in candidates if p.material_id == product.material_id and p.color_id == product.color_id]
-        selected = max(matching or candidates, key=lambda p: (p.sale_sample_count, p.purchase_sample_count))
-        if product.default_weight != selected.average_weight:
-            product.default_weight = selected.average_weight
-            product.save(update_fields=["default_weight"])
     return {
         "profiles": len(profiles), "sale_rows": sale_items.count(),
         "purchase_rows": purchase_items.count() + legacy_purchase_items.count(),

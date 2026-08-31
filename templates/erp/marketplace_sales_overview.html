@@ -1,0 +1,7 @@
+{% extends 'erp/base.html' %}
+{% block title %}채널별 매출 확인{% endblock %}
+{% block content %}
+<section class="market-page-head"><div><h2>채널별 매출 확인</h2><p>판매금액에서 채널 수수료·할인비용·상품 원가를 차감해 실제 마진을 계산할 화면입니다.</p></div></section>
+<section class="market-sales-grid">{% for row in channel_rows %}<article><header><b>{{ row.label }}</b><span>{{ row.status }}</span></header><div><small>수집 상품</small><strong>{{ row.product_count }}개</strong></div><div><small>ERP 마스터 연결</small><strong>{{ row.linked_count }}개</strong></div><p>현재 상품 API만 연결되어 판매량·주문금액·정산 수수료는 아직 수집되지 않았습니다. 주문/정산 API 연결 후 매출, 수수료, 원가, 순마진을 표시합니다.</p></article>{% endfor %}</section>
+<section class="rium-box market-margin-schema"><h3>계산 구조</h3><p>실제 마진 = 결제 매출 − 채널 수수료 − 판매자 부담 할인 − 배송비 − 금 원가 − 공임 원가</p><div><span>판매량</span><span>결제 매출</span><span>수수료</span><span>정산 예정일</span><span>금 원가</span><span>순마진</span></div></section>
+{% endblock %}

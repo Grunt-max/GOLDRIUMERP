@@ -1,0 +1,27 @@
+{% extends 'erp/base.html' %}
+{% block title %}권한관리{% endblock %}
+{% block content %}
+<section class="access-intro"><div><b>직원 조회 계정 관리</b><p>직원에게 필요한 메뉴의 조회 권한만 부여합니다. 등록·수정·삭제는 master만 가능합니다.</p></div><span>MASTER · {{ request.user.username }}</span></section>
+<div class="access-layout">
+  <section class="access-card"><header><div><b>새 직원 계정</b><small>ID와 최초 비밀번호를 설정합니다.</small></div></header>
+    <form method="post" class="access-form">{% csrf_token %}<input type="hidden" name="action" value="create">
+      <label>아이디 {{ create_form.username }}</label><label>최초 비밀번호 {{ create_form.password1 }}</label><label>비밀번호 확인 {{ create_form.password2 }}</label>
+      {% if create_form.errors %}<div class="access-errors">{{ create_form.errors }}</div>{% endif %}
+      <fieldset><legend>조회 가능 메뉴</legend><div class="permission-grid">{% for key,label in sections %}<label><input type="checkbox" name="sections" value="{{ key }}"> <span>{{ label }}</span></label>{% endfor %}</div></fieldset>
+      <button type="submit">조회 계정 만들기</button>
+    </form>
+  </section>
+  <section class="access-card"><header><div><b>Master 비밀번호 변경</b><small>현재 비밀번호 확인 후 즉시 변경됩니다.</small></div></header>
+    <form method="post" class="access-form">{% csrf_token %}<input type="hidden" name="action" value="master_password">{{ password_form.as_p }}<button type="submit">Master 비밀번호 변경</button></form>
+  </section>
+</div>
+<section class="access-card employee-access-list"><header><div><b>직원 계정 및 권한</b><small>비활성화하면 해당 직원은 즉시 로그인할 수 없습니다.</small></div></header>
+  {% for row in employees %}<article class="employee-access-row">
+    <form method="post" class="employee-permission-form">{% csrf_token %}<input type="hidden" name="action" value="update"><input type="hidden" name="user_id" value="{{ row.user.pk }}">
+      <div class="employee-identity"><b>{{ row.user.username }}</b><label><input type="checkbox" name="is_active" {% if row.user.is_active %}checked{% endif %}> 로그인 허용</label></div>
+      <div class="permission-grid">{% for key,label in sections %}<label><input type="checkbox" name="sections" value="{{ key }}" {% if key in row.allowed %}checked{% endif %}> <span>{{ label }}</span></label>{% endfor %}</div><button type="submit">권한 저장</button>
+    </form>
+    <form method="post" class="employee-password-form">{% csrf_token %}<input type="hidden" name="action" value="reset_password"><input type="hidden" name="user_id" value="{{ row.user.pk }}"><input type="password" name="new_password1" placeholder="새 비밀번호" required><input type="password" name="new_password2" placeholder="새 비밀번호 확인" required><button type="submit">비밀번호 재설정</button></form>
+  </article>{% empty %}<p class="empty">등록된 직원 계정이 없습니다.</p>{% endfor %}
+</section>
+{% endblock %}

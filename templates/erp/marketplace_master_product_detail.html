@@ -1,0 +1,35 @@
+{% extends 'erp/base.html' %}{% load erp_numbers %}
+{% block title %}오픈마켓 마스터 상품{% endblock %}
+{% block content %}
+<a class="market-back-link" href="{% url 'erp:marketplace_list' %}">‹ 아이템 목록</a>
+<section class="market-master-detail-head">
+  <div class="market-master-thumb large">{% if preview.product.image %}<img src="{{ preview.product.image.url }}" alt="">{% elif preview.naver_listing.image_url %}<img src="{{ preview.naver_listing.image_url }}" alt="">{% elif preview.coupang_listing.image_url %}<img src="{{ preview.coupang_listing.image_url }}" alt="">{% endif %}</div>
+  <div><small>ERP 오픈마켓 Product ID</small><h2>{{ preview.product.code }}</h2><strong>{{ preview.product.name }}</strong></div>
+</section>
+<section class="market-common-variants">
+  <header><h3>공통 기준 옵션</h3><p>채널마다 반복 생성하지 않고 이 4개 기준을 네이버 조합옵션과 쿠팡 단일 아이템으로 변환합니다.</p></header>
+  <div>{% for variant in preview.variants %}<article><b>{{ variant.code }}</b><span>{{ variant.material }} / {{ variant.market_color }}</span><small>{{ variant.sku }}</small></article>{% endfor %}</div>
+</section>
+<section class="rium-box market-pricing-table"><header><h3>중량·금시세·마진 판매가</h3><p>최신 확정 도매 금시세와 순도, 공임, 채널 수수료, 목표 마진율을 사용합니다.</p></header><div class="rium-table-wrap"><table><thead><tr><th>기준옵션</th><th>중량</th><th>금 원가</th><th>공임 포함 원가</th><th>네이버 권장가</th><th>쿠팡 권장가</th></tr></thead><tbody>{% for row in pricing_rows %}<tr><td><b>{{ row.variant.base_variant }}</b></td><td>{{ row.variant.weight|default:preview.product.default_weight|default:'미입력' }}{% if row.variant.weight or preview.product.default_weight %}g{% endif %}</td><td>{% if row.naver.gold_cost != None %}{{ row.naver.gold_cost|erp_number:0 }}원{% else %}-{% endif %}</td><td>{% if row.naver.total_cost != None %}{{ row.naver.total_cost|erp_number:0 }}원{% else %}-{% endif %}</td><td>{% if row.naver.sale_price != None %}<b>{{ row.naver.sale_price|erp_number:0 }}원</b>{% else %}-{% endif %}</td><td>{% if row.coupang.sale_price != None %}<b>{{ row.coupang.sale_price|erp_number:0 }}원</b>{% else %}-{% endif %}</td></tr>{% endfor %}</tbody></table></div></section>
+<details class="market-product-editor">
+  <summary>상품 정보·가격 기준·상세페이지 입력</summary>
+  <form method="post">{% csrf_token %}<div class="market-editor-grid"><fieldset><legend>ERP 공통 상품정보</legend>{{ product_form.as_p }}</fieldset><fieldset><legend>네이버 전용 설정</legend>{{ naver_form.as_p }}</fieldset><fieldset><legend>쿠팡 전용 설정</legend>{{ coupang_form.as_p }}</fieldset></div><button type="submit">상품 설정 저장</button></form>
+</details>
+<details class="market-alias-reference">
+  <summary>ERP 공통 필드 → 네이버·쿠팡 API alias 보기</summary>
+  <div class="rium-table-wrap"><table><thead><tr><th>ERP 필드</th><th>의미</th><th>네이버 API</th><th>쿠팡 API</th></tr></thead><tbody>{% for field, label, naver, coupang in field_aliases %}<tr><td>{{ field }}</td><td>{{ label }}</td><td>{{ naver }}</td><td>{{ coupang }}</td></tr>{% endfor %}</tbody></table></div>
+  <div class="market-channel-only"><article><b>네이버에서 따로 입력</b>{% for item in channel_only_fields.naver %}<span>• {{ item }}</span>{% endfor %}</article><article><b>쿠팡에서 따로 입력</b>{% for item in channel_only_fields.coupang %}<span>• {{ item }}</span>{% endfor %}</article></div>
+</details>
+<section class="market-channel-comparison">
+  <article class="naver"><header><b>네이버</b>{% if preview.naver_listing %}<a href="{% url 'erp:marketplace_product_detail' preview.naver_listing.pk %}">원본 상세 ›</a>{% endif %}</header>{% if preview.naver_listing %}<strong>{{ preview.naver_listing.display_price|erp_number:0 }}원</strong><p>상품번호 {{ preview.naver_listing.external_product_id }}</p><span>옵션 {{ preview.naver_offers|length }}개 · {{ preview.naver_listing.status|default:'상태 없음' }}</span>{% else %}<p>연결된 상품 없음</p>{% endif %}</article>
+  <article class="coupang"><header><b>쿠팡</b>{% if preview.coupang_listing %}<a href="{% url 'erp:marketplace_product_detail' preview.coupang_listing.pk %}">원본 상세 ›</a>{% endif %}</header>{% if preview.coupang_listing %}<strong>{{ preview.coupang_listing.display_price|erp_number:0 }}원</strong><p>상품번호 {{ preview.coupang_listing.external_product_id }}</p><span>옵션 {{ preview.coupang_offers|length }}개 · {{ preview.coupang_listing.status|default:'상태 없음' }}</span>{% else %}<p>연결된 상품 없음</p>{% endif %}</article>
+</section>
+<details class="market-option-compare" open>
+  <summary>실제 옵션 비교 {% if preview.option_count_conflict %}<span class="option-warning">옵션 수 불일치</span>{% endif %}</summary>
+  <div class="channel-transform-grid">
+    <article><header><b>네이버 옵션</b><span>{{ preview.naver_offers|length }}개</span></header><table><thead><tr><th>옵션명</th><th>노출가</th><th>상태</th></tr></thead><tbody>{% for offer in preview.naver_offers|slice:':30' %}<tr><td>{{ offer.option_name }}</td><td>{{ offer.display_price|erp_number:0 }}원</td><td>{{ offer.sale_status|default:'-' }}</td></tr>{% empty %}<tr><td colspan="3">옵션 없음</td></tr>{% endfor %}</tbody></table></article>
+    <article><header><b>쿠팡 옵션</b><span>{{ preview.coupang_offers|length }}개</span></header><table><thead><tr><th>옵션명</th><th>노출가</th><th>상태</th></tr></thead><tbody>{% for offer in preview.coupang_offers|slice:':30' %}<tr><td>{{ offer.option_name }}</td><td>{{ offer.display_price|erp_number:0 }}원</td><td>{{ offer.sale_status|default:'-' }}</td></tr>{% empty %}<tr><td colspan="3">옵션 없음</td></tr>{% endfor %}</tbody></table></article>
+  </div>
+  <p class="market-compare-note">화면 속도를 위해 채널별 앞의 30개 옵션만 표시합니다. 원본 상세에서 전체 옵션을 확인할 수 있습니다.</p>
+</details>
+{% endblock %}

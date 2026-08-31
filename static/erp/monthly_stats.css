@@ -20,7 +20,15 @@
   font-size: 11px;
 }
 .monthly-sort-buttons a.active { border-color: #267fae; background: #3188bf; color: #fff !important; font-weight: 800; }
+.monthly-period-form{display:flex;align-items:end;gap:6px}.monthly-period-form label{display:grid;gap:3px;color:#607681;font-size:10px}.monthly-period-form input{min-width:145px}.monthly-period-form span{padding-bottom:10px;color:#607681}.monthly-loss-value{display:inline;color:#8a5b00;font-size:10px;font-weight:800;white-space:nowrap}.monthly-wholesale-note{margin:0;padding:8px 12px;background:#fff8dc;color:#705c1f;font-size:10px;text-align:right}
+.monthly-sort-link{display:block!important;margin:0!important;padding:5px 3px!important;color:inherit!important;text-align:center;text-decoration:none!important;font-weight:800}.monthly-sort-link:hover,.monthly-sort-link.active{background:#d9edf8;color:#075b8a!important}
 @media (max-width: 700px) {
   .monthly-sort-buttons { position: sticky; top: calc(78px + env(safe-area-inset-top)); z-index: 35; padding: 6px; }
   .monthly-sort-buttons a { min-height: 38px; display: flex !important; align-items: center; font-size: 12px; }
+  .monthly-period-form{display:grid!important;grid-template-columns:1fr auto 1fr!important;align-items:end}.monthly-period-form label{min-width:0}.monthly-period-form input{width:100%;min-width:0}.monthly-period-form button{grid-column:1/-1}.monthly-loss-value{display:block;margin-top:2px;font-size:9px}.monthly-wholesale-note{text-align:left}
+  .monthly-customer-sales tbody td:nth-child(2):before{content:'해리 전 순금'}
+  .monthly-customer-sales tbody td:nth-child(3):before{content:'해리 이득금'}
+  .monthly-customer-sales tbody td:nth-child(4):before{content:'전체 순금 매출'}
+  .monthly-customer-sales tbody td:nth-child(5):before{content:'매출 공임'}
+  .monthly-customer-sales tbody td:nth-child(5){grid-column:1/-1}
 }
