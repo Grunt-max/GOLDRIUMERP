@@ -5,16 +5,18 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$RepoPath = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$GitPrefix = @("-c", "safe.directory=$RepoPath", "-C", $RepoPath)
 
 function Invoke-Git {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
-    & git @Arguments
+    & git @GitPrefix @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "git $($Arguments -join ' ') failed with exit code $LASTEXITCODE"
     }
 }
 
-$changes = & git status --porcelain
+$changes = & git @GitPrefix status --porcelain
 if ($LASTEXITCODE -ne 0) {
     throw "This folder is not a Git working tree."
 }
