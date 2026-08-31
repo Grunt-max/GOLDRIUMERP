@@ -8,6 +8,7 @@ ENV_FILE=/etc/goldrium-erp.env
 SERVICE=goldrium-erp.service
 BRANCH=main
 LOCK_FILE=/run/lock/goldrium-deploy.lock
+HEALTH_URL=http://127.0.0.1:8001/login/
 
 if [[ ${EUID} -ne 0 ]]; then
     echo "Run this deployment as root." >&2
@@ -81,7 +82,7 @@ run_django collectstatic --noinput
 systemctl start "${SERVICE}"
 
 for _ in {1..20}; do
-    if curl --fail --silent --output /dev/null http://127.0.0.1:8000/login/; then
+    if curl --fail --silent --output /dev/null "${HEALTH_URL}"; then
         service_stopped=0
         trap - ERR
         echo "Deployed ${target_commit} successfully."
