@@ -59,20 +59,24 @@ rollback() {
 }
 trap rollback ERR
 
+run_django() {
+    systemd-run --wait --pipe --quiet --collect --service-type=exec \
+        --property=User=goldrium \
+        --property=Group=goldrium \
+        --property="WorkingDirectory=${APP_DIR}" \
+        --property="EnvironmentFile=${ENV_FILE}" \
+        "${VENV_DIR}/bin/python" manage.py "$@"
+}
+
 systemctl stop "${SERVICE}"
 service_stopped=1
 
 runuser -u goldrium -- git reset --hard "origin/${BRANCH}"
 runuser -u goldrium -- "${VENV_DIR}/bin/python" -m pip install -r requirements.txt
 
-set -a
-# shellcheck disable=SC1090
-source "${ENV_FILE}"
-set +a
-
-runuser -u goldrium --preserve-environment -- "${VENV_DIR}/bin/python" manage.py check --deploy
-runuser -u goldrium --preserve-environment -- "${VENV_DIR}/bin/python" manage.py migrate --noinput
-runuser -u goldrium --preserve-environment -- "${VENV_DIR}/bin/python" manage.py collectstatic --noinput
+run_django check --deploy
+run_django migrate --noinput
+run_django collectstatic --noinput
 
 systemctl start "${SERVICE}"
 
