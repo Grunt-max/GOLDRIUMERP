@@ -1192,17 +1192,6 @@ def sale_create(request):
     if request.method == "POST" and header_form.is_valid() and line_formset.is_valid():
         lines = [form.cleaned_data for form in line_formset if form.cleaned_data.get("model_number") and not form.cleaned_data.get("DELETE")]
         customer = header_form.cleaned_data["customer"]
-        account_error = False
-        for form in line_formset:
-            if not getattr(form, "cleaned_data", None) or form.cleaned_data.get("DELETE"):
-                continue
-            account = form.cleaned_data.get("receivable_account")
-            if account and account.customer_id != customer.pk:
-                form.add_error("receivable_account", "선택한 거래처의 미수 계정만 사용할 수 있습니다.")
-                account_error = True
-            elif form.cleaned_data.get("model_number") and customer.receivable_accounts.filter(active=True).exists() and not account:
-                form.add_error("receivable_account", "이 거래처는 미수 계정을 선택해야 합니다.")
-                account_error = True
         sale_date = header_form.cleaned_data["ordered_at"]
         current_has_payment = any(line["entry_type"] == "payment" for line in lines)
         first_sale_after_payment_date = sale_date if current_has_payment else None
@@ -1240,7 +1229,7 @@ def sale_create(request):
                 elif line["entry_type"] == "sale" and first_sale_after_payment_date and not first_sale_note_applied:
                     line["memo"] = f"직전 결제일: {first_sale_after_payment_date:%Y-%m-%d}"
                     first_sale_note_applied = True
-        if not header_form.errors and not account_error:
+        if not header_form.errors:
             with transaction.atomic():
                 sale = SaleTransaction.objects.create(
                     transaction_no=generate_transaction_no(header_form.cleaned_data["ordered_at"]),
@@ -1250,7 +1239,7 @@ def sale_create(request):
                 for line in lines:
                     item = SaleItem.objects.create(
                         transaction=sale, entry_type=line["entry_type"], product=line.get("catalog_product"), model_number=line["model_number"].strip(),
-                        receivable_account=line.get("receivable_account"),
+                        receivable_account=header_form.cleaned_data.get("receivable_account"),
                         material=line["material"], color=line.get("color"), weight=line["weight"],
                         settlement_weight=line.get("settlement_weight"), loss_rate=line.get("loss_rate") or 0,
                         quantity=line["quantity"], unit_price=line["unit_price"],
@@ -1285,7 +1274,9 @@ def sale_create(request):
         "submission_failed": request.method == "POST",
         "product_defaults": product_defaults, "material_defaults": material_defaults,
         "customer_defaults": list(Customer.objects.filter(customer_type="sales").values("id", "name")),
-        "receivable_accounts": list(ReceivableAccount.objects.filter(active=True).values("id", "customer_id", "name")),
+        "receivable_accounts": list(ReceivableAccount.objects.filter(
+            active=True, customer__receivable_accounts_enabled=True,
+        ).values("id", "customer_id", "name")),
     })
 
 

@@ -264,7 +264,7 @@ class CustomerForm(StyledForm):
 
     class Meta:
         model = Customer
-        fields = ["name", "customer_type", "contact", "phone", "default_loss_rate", "supplier_name_override", "memo"]
+        fields = ["name", "customer_type", "contact", "phone", "default_loss_rate", "supplier_name_override", "receivable_accounts_enabled", "memo"]
         widgets = {
             "default_loss_rate": forms.NumberInput(attrs={"min": "0", "step": "0.01", "placeholder": "미설정 시 재질 기본값 적용"}),
             "supplier_name_override": forms.TextInput(attrs={"placeholder": "비워두면 기초관리의 기본 공급자명 사용"}),
@@ -448,6 +448,7 @@ class OrderForm(StyledForm):
 
 class SaleHeaderForm(forms.Form):
     customer = forms.ModelChoiceField(label="거래처", queryset=Customer.objects.none())
+    receivable_account = forms.ModelChoiceField(label="미수 계정", queryset=ReceivableAccount.objects.none(), required=False)
     ordered_at = forms.DateField(label="거래일", widget=forms.DateInput(attrs={"type": "date"}), initial=timezone.localdate)
     status = forms.ChoiceField(label="상태", choices=SaleTransaction.STATUS_CHOICES, initial="new", widget=forms.HiddenInput())
     memo = forms.CharField(label="거래 비고", required=False, widget=forms.TextInput())
@@ -455,8 +456,24 @@ class SaleHeaderForm(forms.Form):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["customer"].queryset = Customer.objects.filter(customer_type="sales")
+        self.fields["receivable_account"].queryset = ReceivableAccount.objects.filter(
+            active=True, customer__receivable_accounts_enabled=True,
+        ).select_related("customer")
         for field in self.fields.values():
             field.widget.attrs["class"] = "field"
+
+    def clean(self):
+        cleaned = super().clean()
+        customer = cleaned.get("customer")
+        account = cleaned.get("receivable_account")
+        if not customer:
+            return cleaned
+        enabled_accounts = customer.receivable_accounts.filter(active=True)
+        if customer.receivable_accounts_enabled and enabled_accounts.exists() and not account:
+            self.add_error("receivable_account", "미수 계정을 선택하세요.")
+        elif account and (not customer.receivable_accounts_enabled or account.customer_id != customer.pk or not account.active):
+            self.add_error("receivable_account", "선택한 거래처에서 사용 중인 미수 계정만 선택할 수 있습니다.")
+        return cleaned
 
 
 class MoneyDecimalField(forms.DecimalField):
@@ -472,7 +489,6 @@ class SaleLineForm(forms.Form):
         choices=(("sale", "판매"), ("return", "반품"), ("payment", "결제")),
         initial="sale",
     )
-    receivable_account = forms.ModelChoiceField(label="미수 계정", queryset=ReceivableAccount.objects.none(), required=False)
     model_number = forms.CharField(label="모델번호", max_length=40, required=False, widget=forms.TextInput(attrs={"autocomplete": "off"}))
     material = forms.ModelChoiceField(label="재질", queryset=Material.objects.none(), required=False)
     color = forms.ModelChoiceField(label="색상", queryset=ProductColor.objects.none(), required=False)
@@ -488,7 +504,6 @@ class SaleLineForm(forms.Form):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields["receivable_account"].queryset = ReceivableAccount.objects.filter(active=True).select_related("customer")
         self.fields["material"].queryset = Material.objects.filter(active=True)
         self.fields["color"].queryset = ProductColor.objects.filter(active=True)
         for field in self.fields.values():
@@ -498,7 +513,7 @@ class SaleLineForm(forms.Form):
         cleaned = super().clean()
         model_number = (cleaned.get("model_number") or "").strip()
         entry_type = cleaned.get("entry_type") or "sale"
-        meaningful_fields = ("receivable_account", "model_number", "material", "color", "weight", "settlement_weight", "loss_rate", "memo")
+        meaningful_fields = ("model_number", "material", "color", "weight", "settlement_weight", "loss_rate", "memo")
         entered = entry_type == "payment" or any(
             str(self.data.get(self.add_prefix(field), "")).strip() for field in meaningful_fields
         )
@@ -513,9 +528,6 @@ class SaleLineForm(forms.Form):
             cleaned["color"] = None
             cleaned["loss_rate"] = Decimal("0")
             cleaned["quantity"] = 1
-            for field in ("weight", "settlement_weight", "unit_price"):
-                if cleaned.get(field) is not None:
-                    cleaned[field] = abs(cleaned[field])
             if cleaned["material"] is None:
                 self.add_error("material", "기초관리에서 활성 상태의 24K 재질을 등록하세요.")
         if not model_number:

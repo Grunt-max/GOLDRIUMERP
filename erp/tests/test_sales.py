@@ -983,7 +983,7 @@ class SaleStructureTests(TestCase):
         self.assertNotContains(response, "finishSalePopup")
         self.assertEqual(SaleTransaction.objects.count(), 0)
 
-    def test_mixed_sale_and_negative_payment_are_saved_atomically_and_payment_is_normalized(self):
+    def test_mixed_sale_and_negative_payment_preserves_signed_reversal(self):
         data = {
             "header-customer": self.customer.pk, "header-ordered_at": "2026-09-02", "header-status": "new", "header-memo": "",
             "lines-TOTAL_FORMS": "2", "lines-INITIAL_FORMS": "0", "lines-MIN_NUM_FORMS": "0", "lines-MAX_NUM_FORMS": "1000",
@@ -998,9 +998,33 @@ class SaleStructureTests(TestCase):
         self.assertRedirects(response, reverse("erp:sales_list"))
         sale = SaleTransaction.objects.get()
         payment = sale.items.get(entry_type="payment")
-        self.assertEqual(payment.weight, Decimal("1.000"))
-        self.assertEqual(payment.unit_price, Decimal("500"))
-        self.assertEqual(sale.paid_gold_weight, Decimal("1.000"))
-        self.assertEqual(sale.paid_labor_amount, Decimal("500"))
-        self.assertEqual(sale.gold_receivable, Decimal("0.205"))
-        self.assertEqual(sale.labor_receivable, Decimal("500"))
+        self.assertEqual(payment.weight, Decimal("-1.000"))
+        self.assertEqual(payment.unit_price, Decimal("-500"))
+        self.assertEqual(sale.paid_gold_weight, Decimal("-1.000"))
+        self.assertEqual(sale.paid_labor_amount, Decimal("-500"))
+        self.assertEqual(sale.gold_receivable, Decimal("2.205"))
+        self.assertEqual(sale.labor_receivable, Decimal("1500"))
+
+    def test_enabled_customer_account_is_selected_once_for_the_whole_transaction(self):
+        self.customer.receivable_accounts_enabled = True
+        self.customer.save(update_fields=["receivable_accounts_enabled"])
+        account = ReceivableAccount.objects.create(customer=self.customer, name="로프 미수")
+        data = {
+            "header-customer": self.customer.pk, "header-receivable_account": account.pk,
+            "header-ordered_at": "2026-09-02", "header-status": "new", "header-memo": "",
+            "lines-TOTAL_FORMS": "2", "lines-INITIAL_FORMS": "0", "lines-MIN_NUM_FORMS": "0", "lines-MAX_NUM_FORMS": "1000",
+            "lines-0-entry_type": "sale", "lines-0-model_number": "CAT-001", "lines-0-material": self.material_14.pk,
+            "lines-0-color": self.color_p.pk, "lines-0-weight": "1", "lines-0-loss_rate": "3",
+            "lines-0-quantity": "1", "lines-0-unit_price": "1000", "lines-0-memo": "",
+            "lines-1-entry_type": "payment", "lines-1-model_number": "", "lines-1-material": "",
+            "lines-1-color": "", "lines-1-weight": "0", "lines-1-loss_rate": "",
+            "lines-1-quantity": "1", "lines-1-unit_price": "500", "lines-1-memo": "",
+        }
+        response = self.client.post(reverse("erp:sale_create"), data)
+        self.assertRedirects(response, reverse("erp:sales_list"))
+        self.assertEqual(set(SaleItem.objects.values_list("receivable_account_id", flat=True)), {account.pk})
+
+        data["header-receivable_account"] = ""
+        response = self.client.post(reverse("erp:sale_create"), data)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "미수 계정을 선택하세요.")

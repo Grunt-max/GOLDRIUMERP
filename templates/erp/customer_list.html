@@ -2,10 +2,10 @@
 {% block title %}거래처 관리{% endblock %}
 {% block content %}
 <section class="panel">
-  <div class="panel-title"><p>거래처별 기본 해리율과 명세서 공급자명을 관리합니다.</p><button data-modal-open="customer-create">+ 거래처 등록</button></div>
+  <div class="panel-title"><p>거래처별 기본 해리율·명세서 공급자명·미수계정을 관리합니다.</p><button data-modal-open="customer-create">+ 거래처 등록</button></div>
   <form class="search" method="get"><input name="q" value="{{ query }}" placeholder="거래처명 검색"><button type="submit">검색</button></form>
-  <table><thead><tr><th>거래처명</th><th>구분</th><th>담당자</th><th>연락처</th><th>기본 해리율(%)</th><th>별도 공급자명</th><th></th></tr></thead><tbody>
-  {% for customer in customers %}<tr><td>{{ customer.name }}</td><td>{{ customer.get_customer_type_display }}</td><td>{{ customer.contact }}</td><td>{{ customer.phone }}</td><td>{% if customer.default_loss_rate is not None %}{{ customer.default_loss_rate }}%{% else %}미설정{% endif %}</td><td>{{ customer.supplier_name_override|default:'기본값 사용' }}</td><td class="actions"><button class="text-button" data-modal-open="customer-edit-{{ customer.id }}">수정</button><form method="post" action="{% url 'erp:customer_delete' customer.id %}">{% csrf_token %}<button class="text-button delete" onclick="return confirm('이 거래처를 삭제할까요?')">삭제</button></form></td></tr>{% empty %}<tr><td colspan="7" class="empty">등록된 거래처가 없습니다.</td></tr>{% endfor %}
+  <table><thead><tr><th>거래처명</th><th>구분</th><th>담당자</th><th>연락처</th><th>기본 해리율(%)</th><th>미수계정</th><th>별도 공급자명</th><th></th></tr></thead><tbody>
+  {% for customer in customers %}<tr><td>{{ customer.name }}</td><td>{{ customer.get_customer_type_display }}</td><td>{{ customer.contact }}</td><td>{{ customer.phone }}</td><td>{% if customer.default_loss_rate is not None %}{{ customer.default_loss_rate }}%{% else %}미설정{% endif %}</td><td>{% if customer.receivable_accounts_enabled %}<b>ON</b> · {% for account in customer.receivable_accounts.all %}{% if account.active %}{{ account.name }}{% if not forloop.last %}, {% endif %}{% endif %}{% empty %}계정 없음{% endfor %}{% else %}OFF{% endif %}</td><td>{{ customer.supplier_name_override|default:'기본값 사용' }}</td><td class="actions"><button class="text-button" data-modal-open="customer-edit-{{ customer.id }}">수정</button><form method="post" action="{% url 'erp:customer_delete' customer.id %}">{% csrf_token %}<button class="text-button delete" onclick="return confirm('이 거래처를 삭제할까요?')">삭제</button></form></td></tr>{% empty %}<tr><td colspan="8" class="empty">등록된 거래처가 없습니다.</td></tr>{% endfor %}
   </tbody></table>
 </section>
 {% include 'erp/modal.html' with modal_id='customer-create' modal_title='거래처 등록' action='/customers/new/' form=create_form %}
@@ -16,6 +16,8 @@
   <label>연락처<input class="field" name="phone" value="{{ customer.phone }}"></label>
   <label>기본 해리율(%)<input class="field" type="number" name="default_loss_rate" value="{{ customer.default_loss_rate|default_if_none:'' }}" min="0" step="0.01" placeholder="미설정 시 재질 기본값 적용"></label>
   <label>명세서 공급자명<input class="field" name="supplier_name_override" value="{{ customer.supplier_name_override }}" placeholder="비워두면 기초관리 기본값 사용"></label>
+  <label>미수계정 사용<input type="checkbox" name="receivable_accounts_enabled" value="on" {% if customer.receivable_accounts_enabled %}checked{% endif %}></label>
+  <label>미수 계정명<input class="field" name="receivable_account_names" value="{% for account in customer.receivable_accounts.all %}{% if account.active %}{{ account.name }}{% if not forloop.last %}, {% endif %}{% endif %}{% endfor %}" placeholder="예: 코코 미수, 로프 미수"><small>쉼표로 구분합니다. 사용을 켠 거래처만 판매등록에 표시됩니다.</small></label>
   <label>메모<textarea class="field" name="memo">{{ customer.memo }}</textarea></label>
   <div class="modal-actions"><button type="button" class="secondary" data-modal-close>취소</button><button type="submit">저장하기</button></div>
 </form></div></div>{% endfor %}

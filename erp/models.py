@@ -42,6 +42,7 @@ class Customer(models.Model):
     memo = models.TextField("메모", blank=True)
     default_loss_rate = models.DecimalField("기본 해리율(%)", max_digits=6, decimal_places=2, null=True, blank=True)
     supplier_name_override = models.CharField("명세서 공급자명", max_length=100, blank=True)
+    receivable_accounts_enabled = models.BooleanField("미수계정 사용", default=False)
     created_at = models.DateTimeField("등록일", auto_now_add=True)
 
     class Meta:
