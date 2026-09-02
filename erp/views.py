@@ -17,7 +17,7 @@ from django.views.decorators.http import require_POST
 from .access import master_reauthentication_required
 from .gold_prices import collect_gold_prices
 from .forms import CompanyProfileForm, CustomerForm, DailyActivityForm, GoldLedgerEntryForm, GoldPriceForm, MaterialForm, OpenMarketChannelSettingForm, OpenMarketProductForm, OrderForm, ProductColorForm, ProductForm, PurchaseHeaderForm, PurchaseLineFormSet, PurchaseSupplierForm, SaleHeaderForm, SaleLineFormSet
-from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, Factory, GoldLedgerEntry, GoldPrice, MarketplaceProduct, Material, OpenMarketChannelOffer, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketVariant, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, SaleItem, SaleTransaction, generate_transaction_no
+from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, Factory, GoldLedgerEntry, GoldPrice, MarketplaceProduct, Material, OpenMarketChannelOffer, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketVariant, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleItem, SaleTransaction, generate_transaction_no
 from .open_market_aliases import CHANNEL_ONLY_FIELDS, COMMON_FIELD_ALIASES
 from .marketplaces import MarketplaceError, channel_configuration, fetch_coupang_products, fetch_naver_products
 from .marketplace_transformers import build_channel_preview
@@ -1192,6 +1192,17 @@ def sale_create(request):
     if request.method == "POST" and header_form.is_valid() and line_formset.is_valid():
         lines = [form.cleaned_data for form in line_formset if form.cleaned_data.get("model_number") and not form.cleaned_data.get("DELETE")]
         customer = header_form.cleaned_data["customer"]
+        account_error = False
+        for form in line_formset:
+            if not getattr(form, "cleaned_data", None) or form.cleaned_data.get("DELETE"):
+                continue
+            account = form.cleaned_data.get("receivable_account")
+            if account and account.customer_id != customer.pk:
+                form.add_error("receivable_account", "선택한 거래처의 미수 계정만 사용할 수 있습니다.")
+                account_error = True
+            elif form.cleaned_data.get("model_number") and customer.receivable_accounts.filter(active=True).exists() and not account:
+                form.add_error("receivable_account", "이 거래처는 미수 계정을 선택해야 합니다.")
+                account_error = True
         sale_date = header_form.cleaned_data["ordered_at"]
         current_has_payment = any(line["entry_type"] == "payment" for line in lines)
         first_sale_after_payment_date = sale_date if current_has_payment else None
@@ -1229,7 +1240,7 @@ def sale_create(request):
                 elif line["entry_type"] == "sale" and first_sale_after_payment_date and not first_sale_note_applied:
                     line["memo"] = f"직전 결제일: {first_sale_after_payment_date:%Y-%m-%d}"
                     first_sale_note_applied = True
-        if not header_form.errors:
+        if not header_form.errors and not account_error:
             with transaction.atomic():
                 sale = SaleTransaction.objects.create(
                     transaction_no=generate_transaction_no(header_form.cleaned_data["ordered_at"]),
@@ -1239,6 +1250,7 @@ def sale_create(request):
                 for line in lines:
                     item = SaleItem.objects.create(
                         transaction=sale, entry_type=line["entry_type"], product=line.get("catalog_product"), model_number=line["model_number"].strip(),
+                        receivable_account=line.get("receivable_account"),
                         material=line["material"], color=line.get("color"), weight=line["weight"],
                         settlement_weight=line.get("settlement_weight"), loss_rate=line.get("loss_rate") or 0,
                         quantity=line["quantity"], unit_price=line["unit_price"],
@@ -1247,7 +1259,7 @@ def sale_create(request):
                     if item.entry_type == "sale":
                         fulfill_matching_orders(sale.customer, item.model_number, item.quantity, sale.sale_date)
                 sale.refresh_totals()
-            messages.success(request, f"거래번호 {sale.transaction_no}로 제품 {len(lines)}건을 등록했습니다.")
+            messages.success(request, f"정상 반영되었습니다. 거래번호 {sale.transaction_no} · {len(lines)}건")
             if request.POST.get("_popup") == "1":
                 return render(request, "erp/sale_saved.html", {"sale": sale})
             return redirect("erp:sales_list")
@@ -1270,30 +1282,45 @@ def sale_create(request):
     } for material in Material.objects.filter(active=True)]
     return render(request, "erp/sale_form.html", {
         "header_form": header_form, "line_formset": line_formset,
+        "submission_failed": request.method == "POST",
         "product_defaults": product_defaults, "material_defaults": material_defaults,
         "customer_defaults": list(Customer.objects.filter(customer_type="sales").values("id", "name")),
+        "receivable_accounts": list(ReceivableAccount.objects.filter(active=True).values("id", "customer_id", "name")),
     })
 
 
 def receivables_list(request):
     rows = {}
-    for sale in SaleTransaction.objects.exclude(status="cancel").select_related("customer"):
-        row = rows.setdefault(sale.customer_id, {
-            "customer": sale.customer, "sales": [], "transactions": 0,
+    items = SaleItem.objects.exclude(transaction__status="cancel").filter(is_deleted=False).select_related(
+        "transaction", "transaction__customer", "receivable_account",
+    )
+    for item in items:
+        key = (item.transaction.customer_id, item.receivable_account_id)
+        row = rows.setdefault(key, {
+            "customer": item.transaction.customer,
+            "account": item.receivable_account,
+            "transaction_ids": set(), "gold_receivable": Decimal("0"), "labor_receivable": Decimal("0"),
+            "recent_transaction_date": None, "recent_payment_date": None,
         })
-        row["sales"].append(sale)
-        row["transactions"] += 1
+        row["transaction_ids"].add(item.transaction_id)
+        gold_direction = Decimal("1") if item.entry_type == "sale" else Decimal("-1")
+        labor_direction = gold_direction
+        if item.entry_type == "wg":
+            labor_direction = Decimal("0")
+        row["gold_receivable"] += item.pure_gold_weight * gold_direction
+        row["labor_receivable"] += item.total_amount * labor_direction
+        row["recent_transaction_date"] = max(filter(None, [row["recent_transaction_date"], item.transaction.sale_date]))
+        if item.entry_type == "payment":
+            row["recent_payment_date"] = max(filter(None, [row["recent_payment_date"], item.transaction.sale_date]))
     for row in rows.values():
-        row.update(split_receivable_balance(customer_receivable_totals(row.pop("sales"))))
-        customer_sales = SaleTransaction.objects.exclude(status="cancel").filter(customer=row["customer"])
-        row["recent_transaction_date"] = customer_sales.order_by("-sale_date", "-id").values_list("sale_date", flat=True).first()
-        row["recent_payment_date"] = customer_sales.filter(items__entry_type="payment").order_by("-sale_date", "-id").values_list("sale_date", flat=True).first()
+        row["transactions"] = len(row.pop("transaction_ids"))
+        split_receivable_balance(row)
     receivables = sorted(
         (
             row for row in rows.values()
             if row["gold_receivable"] != 0 or row["labor_receivable"] != 0
         ),
-        key=lambda row: row["customer"].name,
+        key=lambda row: (row["customer"].name, row["account"].name if row["account"] else ""),
     )
     receivable_rows = [row for row in receivables if row["gold_due"] or row["labor_due"]]
     advance_rows = [row for row in receivables if row["gold_advance"] or row["labor_advance"]]
@@ -1360,6 +1387,13 @@ def customer_ledger(request, pk):
         transaction__customer=customer,
         is_deleted=False,
     ).select_related("transaction", "material").order_by("transaction__sale_date", "transaction_id", "id")
+    selected_account = request.GET.get("account", "")
+    account = None
+    if selected_account.isdigit():
+        account = get_object_or_404(ReceivableAccount, pk=selected_account, customer=customer)
+        items = items.filter(receivable_account=account)
+    elif selected_account == "default":
+        items = items.filter(receivable_account__isnull=True)
     gold_balance = Decimal("0")
     labor_balance = Decimal("0")
     ledger = []
@@ -1375,7 +1409,7 @@ def customer_ledger(request, pk):
                 "gold_balance": gold_balance, "labor_balance": labor_balance,
             })
     return render(request, "erp/customer_ledger.html", {
-        "customer": customer, "ledger": reversed(ledger),
+        "customer": customer, "account": account, "selected_account": selected_account, "ledger": reversed(ledger),
         "gold_balance": gold_balance, "labor_balance": labor_balance,
         "start_date": start_date.isoformat(), "end_date": end_date.isoformat(),
     })
@@ -1674,6 +1708,7 @@ def sales_return(request):
             SaleItem.objects.create(
                 transaction=return_transaction,
                 entry_type="return",
+                receivable_account=original.receivable_account,
                 model_number=original.model_number,
                 product=original.product,
                 material=original.material,

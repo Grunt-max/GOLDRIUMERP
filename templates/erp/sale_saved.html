@@ -3,7 +3,7 @@
 <html lang="ko">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>판매 등록 완료</title><link rel="stylesheet" href="{% static 'erp/style.css' %}"></head>
 <body class="login-body">
-  <main class="login-card"><header><strong>판매 등록 완료</strong><span>거래번호 {{ sale.transaction_no }}</span></header><p>판매관리 화면을 갱신하고 등록창을 닫습니다.</p><button type="button" onclick="finishSalePopup()">창 닫기</button></main>
+  <main class="login-card"><header><strong>정상 반영되었습니다.</strong><span>거래번호 {{ sale.transaction_no }}</span></header><p>판매관리 화면을 갱신하고 등록창을 닫습니다.</p><button type="button" onclick="finishSalePopup()">창 닫기</button></main>
   <script>
   function finishSalePopup(){if(window.opener&&!window.opener.closed){window.opener.location.reload();window.close()}else{location.replace('{% url "erp:sales_list" %}')}}
   finishSalePopup();

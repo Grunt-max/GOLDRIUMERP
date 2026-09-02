@@ -1,7 +1,8 @@
 {% extends 'erp/popup_base.html' %}{% block title %}{{ customer.name }} 거래 원장{% endblock %}{% block content %}
 <div class="receivable-popup customer-ledger">
-  <div class="popup-title"><strong>{{ customer.name }} 거래 원장</strong><span>판매는 증가, 반품·결제는 차감됩니다.</span><button type="button" onclick="history.back()">× 돌아가기</button></div>
+  <div class="popup-title"><strong>{{ customer.name }}{% if account %} / {{ account.name }}{% elif selected_account == 'default' %} / 기본 미수{% endif %} 거래 원장</strong><span>판매는 증가, 반품·결제는 차감됩니다.</span><button type="button" onclick="history.back()">× 돌아가기</button></div>
   <form method="get" class="ledger-date-filter">
+    {% if selected_account %}<input type="hidden" name="account" value="{{ selected_account }}">{% endif %}
     <label>시작일<input type="date" name="start_date" value="{{ start_date }}"></label>
     <span>~</span>
     <label>종료일<input type="date" name="end_date" value="{{ end_date }}"></label>

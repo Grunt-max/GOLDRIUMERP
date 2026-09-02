@@ -68,6 +68,21 @@ class CustomerAlias(models.Model):
         return f"{self.alias} → {self.customer.name}"
 
 
+class ReceivableAccount(models.Model):
+    """A separately settled sub-ledger belonging to one customer."""
+    customer = models.ForeignKey(Customer, verbose_name="거래처", on_delete=models.CASCADE, related_name="receivable_accounts")
+    name = models.CharField("미수 계정명", max_length=60)
+    active = models.BooleanField("사용", default=True)
+    created_at = models.DateTimeField("등록일", auto_now_add=True)
+
+    class Meta:
+        ordering = ["customer__name", "id"]
+        constraints = [models.UniqueConstraint(fields=["customer", "name"], name="unique_customer_receivable_account_name")]
+
+    def __str__(self):
+        return f"{self.customer.name} / {self.name}"
+
+
 class Material(models.Model):
     name = models.CharField("재질명", max_length=30, unique=True)
     purity_rate = models.DecimalField("순도", max_digits=6, decimal_places=4, default=1)
@@ -584,6 +599,10 @@ class SaleItem(models.Model):
         ("wg", "WG"), ("dc", "DC"), ("vd", "VD"),
     ]
     transaction = models.ForeignKey(SaleTransaction, verbose_name="판매거래", on_delete=models.CASCADE, related_name="items")
+    receivable_account = models.ForeignKey(
+        ReceivableAccount, verbose_name="미수 계정", on_delete=models.PROTECT,
+        null=True, blank=True, related_name="sale_items",
+    )
     entry_type = models.CharField("구분", max_length=10, choices=ENTRY_TYPE_CHOICES, default="sale", db_index=True)
     model_number = models.CharField("모델번호", max_length=40)
     product = models.ForeignKey(Product, verbose_name="카탈로그 상품", on_delete=models.PROTECT, null=True, blank=True)

@@ -8,7 +8,7 @@ from django.core.validators import FileExtensionValidator
 from django.forms import BaseFormSet, formset_factory
 from django.utils import timezone
 from django.db.models.functions import Lower, Trim
-from .models import CompanyProfile, Customer, DailyActivity, Factory, GoldLedgerEntry, GoldPrice, Material, OpenMarketChannelSetting, OpenMarketProduct, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, SaleItem, SaleTransaction
+from .models import CompanyProfile, Customer, DailyActivity, Factory, GoldLedgerEntry, GoldPrice, Material, OpenMarketChannelSetting, OpenMarketProduct, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleItem, SaleTransaction
 
 
 class OpenMarketProductForm(forms.ModelForm):
@@ -256,6 +256,12 @@ PurchaseLineFormSet = formset_factory(PurchaseLineForm, formset=BasePurchaseLine
 
 
 class CustomerForm(StyledForm):
+    receivable_account_names = forms.CharField(
+        label="미수 계정", required=False,
+        help_text="쉼표로 구분하세요. 예: 코코 미수, 로프 미수",
+        widget=forms.TextInput(attrs={"placeholder": "코코 미수, 로프 미수"}),
+    )
+
     class Meta:
         model = Customer
         fields = ["name", "customer_type", "contact", "phone", "default_loss_rate", "supplier_name_override", "memo"]
@@ -274,6 +280,36 @@ class CustomerForm(StyledForm):
         if duplicate.exists():
             raise ValidationError("이미 등록된 거래처명입니다.")
         return name
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk:
+            self.fields["receivable_account_names"].initial = ", ".join(
+                self.instance.receivable_accounts.filter(active=True).values_list("name", flat=True)
+            )
+
+    def clean_receivable_account_names(self):
+        names = [value.strip() for value in self.cleaned_data.get("receivable_account_names", "").split(",") if value.strip()]
+        if len(names) != len({value.casefold() for value in names}):
+            raise ValidationError("미수 계정명을 중복해서 입력할 수 없습니다.")
+        return names
+
+    def save(self, commit=True):
+        customer = super().save(commit=commit)
+        if commit:
+            names = self.cleaned_data.get("receivable_account_names", [])
+            existing = {account.name.casefold(): account for account in customer.receivable_accounts.all()}
+            keep_ids = []
+            for name in names:
+                account = existing.get(name.casefold())
+                if account:
+                    account.name, account.active = name, True
+                    account.save(update_fields=["name", "active"])
+                else:
+                    account = ReceivableAccount.objects.create(customer=customer, name=name)
+                keep_ids.append(account.pk)
+            customer.receivable_accounts.exclude(pk__in=keep_ids).update(active=False)
+        return customer
 
 
 class ProductForm(StyledForm):
@@ -436,21 +472,23 @@ class SaleLineForm(forms.Form):
         choices=(("sale", "판매"), ("return", "반품"), ("payment", "결제")),
         initial="sale",
     )
+    receivable_account = forms.ModelChoiceField(label="미수 계정", queryset=ReceivableAccount.objects.none(), required=False)
     model_number = forms.CharField(label="모델번호", max_length=40, required=False, widget=forms.TextInput(attrs={"autocomplete": "off"}))
     material = forms.ModelChoiceField(label="재질", queryset=Material.objects.none(), required=False)
     color = forms.ModelChoiceField(label="색상", queryset=ProductColor.objects.none(), required=False)
-    weight = forms.DecimalField(label="총중량(g)", max_digits=10, decimal_places=3, required=False, min_value=0)
-    settlement_weight = forms.DecimalField(label="정산중량(g)", max_digits=10, decimal_places=3, required=False, min_value=0)
+    weight = forms.DecimalField(label="총중량(g)", max_digits=10, decimal_places=3, required=False)
+    settlement_weight = forms.DecimalField(label="정산중량(g)", max_digits=10, decimal_places=3, required=False)
     loss_rate = forms.DecimalField(label="해리율(%)", max_digits=6, decimal_places=2, required=False)
     quantity = forms.DecimalField(
         label="수량", max_digits=12, decimal_places=2, min_value=Decimal("0.01"),
         required=False, initial=1, widget=forms.NumberInput(attrs={"step": "any", "inputmode": "decimal"}),
     )
-    unit_price = MoneyDecimalField(label="공임", max_digits=12, decimal_places=0, required=False, min_value=0, initial=0, widget=forms.TextInput(attrs={"inputmode": "numeric", "autocomplete": "off"}))
+    unit_price = MoneyDecimalField(label="공임", max_digits=12, decimal_places=0, required=False, initial=0, widget=forms.TextInput(attrs={"inputmode": "numeric", "autocomplete": "off"}))
     memo = forms.CharField(label="비고", max_length=200, required=False)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.fields["receivable_account"].queryset = ReceivableAccount.objects.filter(active=True).select_related("customer")
         self.fields["material"].queryset = Material.objects.filter(active=True)
         self.fields["color"].queryset = ProductColor.objects.filter(active=True)
         for field in self.fields.values():
@@ -460,6 +498,13 @@ class SaleLineForm(forms.Form):
         cleaned = super().clean()
         model_number = (cleaned.get("model_number") or "").strip()
         entry_type = cleaned.get("entry_type") or "sale"
+        meaningful_fields = ("receivable_account", "model_number", "material", "color", "weight", "settlement_weight", "loss_rate", "memo")
+        entered = entry_type == "payment" or any(
+            str(self.data.get(self.add_prefix(field), "")).strip() for field in meaningful_fields
+        )
+        raw_price = str(self.data.get(self.add_prefix("unit_price"), "")).replace(",", "").replace("₩", "").strip()
+        entered = entered or raw_price not in ("", "0")
+        cleaned["_entered"] = entered
         if entry_type == "payment":
             cleaned["model_number"] = "결제"
             model_number = "결제"
@@ -468,9 +513,14 @@ class SaleLineForm(forms.Form):
             cleaned["color"] = None
             cleaned["loss_rate"] = Decimal("0")
             cleaned["quantity"] = 1
+            for field in ("weight", "settlement_weight", "unit_price"):
+                if cleaned.get(field) is not None:
+                    cleaned[field] = abs(cleaned[field])
             if cleaned["material"] is None:
                 self.add_error("material", "기초관리에서 활성 상태의 24K 재질을 등록하세요.")
         if not model_number:
+            if entered:
+                self.add_error("model_number", "입력한 행의 모델번호를 입력하세요.")
             return cleaned
         product = None if entry_type == "payment" else Product.objects.filter(code__iexact=model_number, active=True).first()
         if product is None and entry_type != "payment":
@@ -490,6 +540,14 @@ class SaleLineForm(forms.Form):
         for field, message in required_fields:
             if cleaned.get(field) is None:
                 self.add_error(field, message)
+        if entry_type != "payment":
+            for field, message in (
+                ("weight", "판매·반품 중량은 음수로 입력할 수 없습니다."),
+                ("settlement_weight", "판매·반품 정산중량은 음수로 입력할 수 없습니다."),
+                ("unit_price", "판매·반품 공임은 음수로 입력할 수 없습니다."),
+            ):
+                if cleaned.get(field) is not None and cleaned[field] < 0:
+                    self.add_error(field, message)
         return cleaned
 
 
@@ -500,7 +558,7 @@ class BaseSaleLineFormSet(BaseFormSet):
             return
         entered_lines = [
             form for form in self.forms
-            if not form.cleaned_data.get("DELETE") and form.cleaned_data.get("model_number")
+            if not form.cleaned_data.get("DELETE") and form.cleaned_data.get("_entered")
         ]
         if not entered_lines:
             raise ValidationError("아무것도 입력되지 않았습니다. 주문 등록 실패")
