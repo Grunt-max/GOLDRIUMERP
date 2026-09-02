@@ -983,6 +983,30 @@ class SaleStructureTests(TestCase):
         self.assertNotContains(response, "finishSalePopup")
         self.assertEqual(SaleTransaction.objects.count(), 0)
 
+    def test_extra_rows_with_only_automatic_defaults_are_ignored(self):
+        data = {
+            "header-customer": self.customer.pk, "header-ordered_at": "2026-09-02", "header-status": "new", "header-memo": "",
+            "lines-TOTAL_FORMS": "5", "lines-INITIAL_FORMS": "0", "lines-MIN_NUM_FORMS": "0", "lines-MAX_NUM_FORMS": "1000",
+        }
+        for index in range(5):
+            data.update({
+                f"lines-{index}-entry_type": "sale", f"lines-{index}-model_number": "",
+                f"lines-{index}-material": "", f"lines-{index}-color": "", f"lines-{index}-weight": "",
+                f"lines-{index}-loss_rate": "5", f"lines-{index}-quantity": "1",
+                f"lines-{index}-unit_price": "0", f"lines-{index}-memo": "",
+            })
+        for index in (0, 1):
+            data.update({
+                f"lines-{index}-model_number": "CAT-001", f"lines-{index}-material": self.material_14.pk,
+                f"lines-{index}-color": self.color_p.pk, f"lines-{index}-weight": "1.000",
+                f"lines-{index}-loss_rate": "3", f"lines-{index}-unit_price": "1000",
+            })
+
+        response = self.client.post(reverse("erp:sale_create"), data)
+        self.assertRedirects(response, reverse("erp:sales_list"))
+        self.assertEqual(SaleTransaction.objects.count(), 1)
+        self.assertEqual(SaleItem.objects.count(), 2)
+
     def test_mixed_sale_and_negative_payment_preserves_signed_reversal(self):
         data = {
             "header-customer": self.customer.pk, "header-ordered_at": "2026-09-02", "header-status": "new", "header-memo": "",

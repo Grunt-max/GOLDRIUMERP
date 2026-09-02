@@ -513,7 +513,9 @@ class SaleLineForm(forms.Form):
         cleaned = super().clean()
         model_number = (cleaned.get("model_number") or "").strip()
         entry_type = cleaned.get("entry_type") or "sale"
-        meaningful_fields = ("model_number", "material", "color", "weight", "settlement_weight", "loss_rate", "memo")
+        # loss_rate, quantity and zero labor can be filled automatically in otherwise blank rows.
+        # They must not turn an unused extra row into a required transaction line.
+        meaningful_fields = ("model_number", "material", "color", "weight", "settlement_weight", "memo")
         entered = entry_type == "payment" or any(
             str(self.data.get(self.add_prefix(field), "")).strip() for field in meaningful_fields
         )
