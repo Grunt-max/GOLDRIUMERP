@@ -406,6 +406,42 @@ class SaleStructureTests(TestCase):
         overridden = self.client.get(detail_url)
         self.assertContains(overridden, "공급자:</b> 거래처 전용 공급자", count=2)
 
+    def test_statement_displays_receivable_account_and_uses_its_balance(self):
+        coco = ReceivableAccount.objects.create(
+            customer=self.customer, name="코코미수", opening_date=date(2026, 8, 21),
+            opening_gold_balance=Decimal("10.000"), opening_labor_balance=Decimal("100000"),
+        )
+        rope = ReceivableAccount.objects.create(customer=self.customer, name="로프미수")
+        prior_sale = SaleTransaction.objects.create(
+            transaction_no="26090100001", sale_date=date(2026, 9, 1), customer=self.customer,
+        )
+        SaleItem.objects.create(
+            transaction=prior_sale, receivable_account=coco, entry_type="sale", model_number="샤넬소",
+            material=self.material_24, weight=Decimal("2.000"), quantity=1, loss_rate=0, unit_price=20000,
+        )
+        SaleItem.objects.create(
+            transaction=prior_sale, receivable_account=rope, entry_type="sale", model_number="1.3mm 로프",
+            material=self.material_24, weight=Decimal("50.000"), quantity=1, loss_rate=0, unit_price=500000,
+        )
+        current_sale = SaleTransaction.objects.create(
+            transaction_no="26090200001", sale_date=date(2026, 9, 2), customer=self.customer,
+        )
+        SaleItem.objects.create(
+            transaction=current_sale, receivable_account=coco, entry_type="sale", model_number="샤넬대",
+            material=self.material_24, weight=Decimal("3.000"), quantity=1, loss_rate=0, unit_price=30000,
+        )
+
+        response = self.client.get(reverse("erp:sale_transaction_detail", args=[current_sale.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["receivable_account"], coco)
+        self.assertEqual(response.context["prior"]["gold_receivable"], Decimal("12.000"))
+        self.assertEqual(response.context["prior"]["labor_receivable"], Decimal("120000"))
+        self.assertEqual(response.context["after"]["gold_receivable"], Decimal("15.000"))
+        self.assertEqual(response.context["after"]["labor_receivable"], Decimal("150000"))
+        self.assertContains(response, f"[{self.customer.name} / 코코미수] 거래 명세서", count=2)
+        self.assertContains(response, "미수계정 · 코코미수", count=2)
+
     def test_customer_loss_rate_can_be_edited(self):
         response = self.client.post(reverse("erp:customer_edit", args=[self.customer.pk]), {
             "name": self.customer.name,

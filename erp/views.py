@@ -454,6 +454,26 @@ def receivable_account_totals(account):
     return {"gold_receivable": gold, "cash_receivable": Decimal("0"), "labor_receivable": labor}
 
 
+def receivable_account_totals_before(account, sale):
+    """Return an account balance immediately before the supplied transaction."""
+    gold = account.opening_gold_balance
+    labor = account.opening_labor_balance
+    items = SaleItem.objects.exclude(transaction__status="cancel").filter(
+        receivable_account=account, is_deleted=False,
+    ).filter(
+        Q(transaction__sale_date__lt=sale.sale_date)
+        | Q(transaction__sale_date=sale.sale_date, transaction_id__lt=sale.id)
+    ).select_related("transaction")
+    if account.opening_date:
+        items = items.filter(transaction__sale_date__gt=account.opening_date)
+    for item in items:
+        gold_direction = Decimal("1") if item.entry_type == "sale" else Decimal("-1")
+        labor_direction = Decimal("0") if item.entry_type == "wg" else gold_direction
+        gold += item.pure_gold_weight * gold_direction
+        labor += item.total_amount * labor_direction
+    return {"gold_receivable": gold, "cash_receivable": Decimal("0"), "labor_receivable": labor}
+
+
 def fulfill_matching_orders(customer, model_number, sold_quantity, completed_at=None):
     """판매 수량을 동일 거래처·모델번호의 오래된 미출고 주문부터 반영한다."""
     remaining_sale = sold_quantity
@@ -1601,7 +1621,7 @@ def sale_transaction_detail(request, pk):
     )
     items = list(
         sale.items.filter(is_deleted=False)
-        .select_related("product", "material", "color")
+        .select_related("product", "material", "color", "receivable_account")
         .order_by("id")
     )
     image_products = Product.objects.exclude(image="").prefetch_related("aliases")
@@ -1619,7 +1639,17 @@ def sale_transaction_detail(request, pk):
     prior_sales = SaleTransaction.objects.exclude(status="cancel").filter(customer=sale.customer).filter(
         Q(sale_date__lt=sale.sale_date) | Q(sale_date=sale.sale_date, id__lt=sale.id)
     )
-    prior = customer_receivable_totals(prior_sales)
+    account_ids = {item.receivable_account_id for item in items}
+    receivable_account = (
+        items[0].receivable_account
+        if items and len(account_ids) == 1 and items[0].receivable_account_id
+        else None
+    )
+    prior = (
+        receivable_account_totals_before(receivable_account, sale)
+        if receivable_account
+        else customer_receivable_totals(prior_sales)
+    )
     to_don = lambda value: (Decimal(value) / Decimal("3.75")).quantize(Decimal("0.001"))
     current = {
         entry_type: {
@@ -1637,14 +1667,21 @@ def sale_transaction_detail(request, pk):
     }
     prior["gold_don"] = to_don(prior["gold_receivable"])
     after["gold_don"] = to_don(after["gold_receivable"])
+    recent_payment_queryset = SaleItem.objects.filter(
+        transaction__in=prior_sales, entry_type="payment", is_deleted=False,
+    )
+    if receivable_account:
+        recent_payment_queryset = recent_payment_queryset.filter(receivable_account=receivable_account)
     recent_payment_item = (
-        SaleItem.objects.filter(transaction__in=prior_sales, entry_type="payment", is_deleted=False)
+        recent_payment_queryset
         .select_related("transaction").order_by("-transaction__sale_date", "-transaction_id", "-id").first()
     )
     if recent_payment_item:
         recent_payment_items = SaleItem.objects.filter(
             transaction=recent_payment_item.transaction, entry_type="payment", is_deleted=False
         )
+        if receivable_account:
+            recent_payment_items = recent_payment_items.filter(receivable_account=receivable_account)
         recent_payment = {
             "date": recent_payment_item.transaction.sale_date,
             "gold": sum((item.pure_gold_weight for item in recent_payment_items), Decimal("0")),
@@ -1677,6 +1714,7 @@ def sale_transaction_detail(request, pk):
         "material_net_weights": material_net_weights,
         "company_profile": company_profile,
         "statement_supplier_name": sale.customer.supplier_name_override or company_profile.supplier_name,
+        "receivable_account": receivable_account,
     })
 
 
