@@ -437,6 +437,23 @@ def split_receivable_balance(balance):
     return balance
 
 
+def receivable_account_totals(account):
+    """Return an account's opening balance plus explicitly assigned later items."""
+    gold = account.opening_gold_balance
+    labor = account.opening_labor_balance
+    items = SaleItem.objects.exclude(transaction__status="cancel").filter(
+        receivable_account=account, is_deleted=False,
+    ).select_related("transaction")
+    if account.opening_date:
+        items = items.filter(transaction__sale_date__gt=account.opening_date)
+    for item in items:
+        gold_direction = Decimal("1") if item.entry_type == "sale" else Decimal("-1")
+        labor_direction = Decimal("0") if item.entry_type == "wg" else gold_direction
+        gold += item.pure_gold_weight * gold_direction
+        labor += item.total_amount * labor_direction
+    return {"gold_receivable": gold, "cash_receivable": Decimal("0"), "labor_receivable": labor}
+
+
 def fulfill_matching_orders(customer, model_number, sold_quantity, completed_at=None):
     """판매 수량을 동일 거래처·모델번호의 오래된 미출고 주문부터 반영한다."""
     remaining_sale = sold_quantity
@@ -1282,10 +1299,29 @@ def sale_create(request):
 
 def receivables_list(request):
     rows = {}
+    active_accounts = list(ReceivableAccount.objects.filter(
+        active=True, customer__receivable_accounts_enabled=True,
+    ).select_related("customer"))
+    customer_cutoffs = {}
+    for account in active_accounts:
+        rows[(account.customer_id, account.pk)] = {
+            "customer": account.customer, "account": account, "transaction_ids": set(),
+            "gold_receivable": account.opening_gold_balance,
+            "labor_receivable": account.opening_labor_balance,
+            "recent_transaction_date": account.opening_date, "recent_payment_date": None,
+        }
+        if account.opening_date:
+            customer_cutoffs[account.customer_id] = max(
+                filter(None, [customer_cutoffs.get(account.customer_id), account.opening_date])
+            )
     items = SaleItem.objects.exclude(transaction__status="cancel").filter(is_deleted=False).select_related(
         "transaction", "transaction__customer", "receivable_account",
     )
     for item in items:
+        if item.receivable_account and item.receivable_account.opening_date and item.transaction.sale_date <= item.receivable_account.opening_date:
+            continue
+        if not item.receivable_account_id and customer_cutoffs.get(item.transaction.customer_id) and item.transaction.sale_date <= customer_cutoffs[item.transaction.customer_id]:
+            continue
         key = (item.transaction.customer_id, item.receivable_account_id)
         row = rows.setdefault(key, {
             "customer": item.transaction.customer,
@@ -1330,11 +1366,16 @@ def receivables_list(request):
 def customer_sales_summary(request, pk):
     customer = get_object_or_404(Customer, pk=pk, customer_type="sales")
     sales = SaleTransaction.objects.exclude(status="cancel").filter(customer=customer)
-    balances = customer_receivable_totals(sales)
+    account_id = request.GET.get("account", "")
+    account = None
+    if account_id.isdigit():
+        account = get_object_or_404(ReceivableAccount, pk=account_id, customer=customer, active=True)
+    balances = receivable_account_totals(account) if account else customer_receivable_totals(sales)
     recent_transaction_date = sales.order_by("-sale_date", "-id").values_list("sale_date", flat=True).first()
     recent_payment_date = sales.filter(items__entry_type="payment").order_by("-sale_date", "-id").values_list("sale_date", flat=True).first()
     return JsonResponse({
         "customer_id": customer.pk,
+        "account_name": account.name if account else None,
         "default_loss_rate": str(customer.default_loss_rate) if customer.default_loss_rate is not None else None,
         "gold_receivable": str(balances["gold_receivable"]),
         "labor_receivable": str(balances["labor_receivable"]),
@@ -1385,8 +1426,10 @@ def customer_ledger(request, pk):
         items = items.filter(receivable_account=account)
     elif selected_account == "default":
         items = items.filter(receivable_account__isnull=True)
-    gold_balance = Decimal("0")
-    labor_balance = Decimal("0")
+    gold_balance = account.opening_gold_balance if account else Decimal("0")
+    labor_balance = account.opening_labor_balance if account else Decimal("0")
+    if account and account.opening_date:
+        items = items.filter(transaction__sale_date__gt=account.opening_date)
     ledger = []
     for item in items:
         direction = Decimal("1") if item.entry_type == "sale" else Decimal("-1")
@@ -1401,6 +1444,9 @@ def customer_ledger(request, pk):
             })
     return render(request, "erp/customer_ledger.html", {
         "customer": customer, "account": account, "selected_account": selected_account, "ledger": reversed(ledger),
+        "opening_date": account.opening_date if account else None,
+        "opening_gold_balance": account.opening_gold_balance if account else Decimal("0"),
+        "opening_labor_balance": account.opening_labor_balance if account else Decimal("0"),
         "gold_balance": gold_balance, "labor_balance": labor_balance,
         "start_date": start_date.isoformat(), "end_date": end_date.isoformat(),
     })

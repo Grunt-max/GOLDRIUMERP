@@ -64,6 +64,34 @@ class SaleStructureTests(TestCase):
         self.assertContains(response, "코코 미수")
         self.assertContains(response, "로프 미수")
 
+    def test_account_opening_balance_replaces_pre_cutoff_history_and_adds_later_assigned_sales(self):
+        self.customer.receivable_accounts_enabled = True
+        self.customer.save(update_fields=["receivable_accounts_enabled"])
+        coco = ReceivableAccount.objects.create(
+            customer=self.customer, name="코코미수", opening_date=date(2026, 8, 25),
+            opening_gold_balance=Decimal("118.586"), opening_labor_balance=Decimal("240000"),
+        )
+        old_sale = SaleTransaction.objects.create(customer=self.customer, sale_date=date(2026, 8, 20))
+        SaleItem.objects.create(
+            transaction=old_sale, entry_type="sale", model_number="과거자료",
+            material=self.material_24, weight=Decimal("50"), quantity=1, loss_rate=0, unit_price=500000,
+        )
+        later_sale = SaleTransaction.objects.create(customer=self.customer, sale_date=date(2026, 9, 1))
+        SaleItem.objects.create(
+            transaction=later_sale, receivable_account=coco, entry_type="sale", model_number="코코대",
+            material=self.material_24, weight=Decimal("2"), quantity=1, loss_rate=0, unit_price=1000,
+        )
+
+        response = self.client.get(reverse("erp:receivables_list"))
+        row = next(row for row in response.context["receivables"] if row["account"] == coco)
+        self.assertEqual(row["gold_receivable"], Decimal("120.586"))
+        self.assertEqual(row["labor_receivable"], Decimal("241000"))
+        self.assertFalse(any(row["account"] is None for row in response.context["receivables"]))
+        summary = self.client.get(reverse("erp:customer_sales_summary", args=[self.customer.pk]), {"account": coco.pk}).json()
+        self.assertEqual(summary["account_name"], "코코미수")
+        self.assertEqual(summary["gold_receivable"], "120.586")
+        self.assertEqual(summary["labor_receivable"], "241000")
+
     def test_newly_uploaded_product_image_is_downsized_before_storage(self):
         source = BytesIO()
         Image.new("RGB", (3200, 2400), (180, 140, 90)).save(source, format="PNG")

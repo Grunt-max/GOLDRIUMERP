@@ -74,6 +74,9 @@ class ReceivableAccount(models.Model):
     customer = models.ForeignKey(Customer, verbose_name="거래처", on_delete=models.CASCADE, related_name="receivable_accounts")
     name = models.CharField("미수 계정명", max_length=60)
     active = models.BooleanField("사용", default=True)
+    opening_date = models.DateField("기준잔액일", null=True, blank=True)
+    opening_gold_balance = models.DecimalField("기준 순금잔액(g)", max_digits=14, decimal_places=3, default=0)
+    opening_labor_balance = models.DecimalField("기준 공임잔액", max_digits=14, decimal_places=0, default=0)
     created_at = models.DateTimeField("등록일", auto_now_add=True)
 
     class Meta:

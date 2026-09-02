@@ -8,6 +8,7 @@
     <label>종료일<input type="date" name="end_date" value="{{ end_date }}"></label>
     <button type="submit">조회</button>
   </form>
+  {% if opening_date %}<p class="receivable-guide">기준잔액 {{ opening_date|date:'Y-m-d' }} · 순금 {{ opening_gold_balance|floatformat:3 }}g · 공임 {{ opening_labor_balance|floatformat:0 }}원 이후의 계정 거래를 표시합니다.</p>{% endif %}
   <div class="receivable-cards"><article><span>현재 순금 미수</span><b class="receivable-value{% if gold_balance < 0 %} negative{% endif %}">{{ gold_balance|floatformat:3 }}g</b></article><article><span>현재 미수 공임</span><b class="receivable-value{% if labor_balance < 0 %} negative{% endif %}">{{ labor_balance|floatformat:0 }}원</b></article></div>
   <div class="receivable-table-wrap"><table class="receivable-table ledger-table">
     <thead><tr><th>일자</th><th>거래번호</th><th>구분</th><th>모델번호</th><th>재질</th><th>순금 증감(g)</th><th>공임 증감(원)</th><th>순금 잔액(g)</th><th>공임 잔액(원)</th><th>비고</th></tr></thead>
