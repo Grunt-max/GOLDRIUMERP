@@ -1786,7 +1786,7 @@ def sales_merge(request):
     if len({sale.customer_id for sale in transactions}) != 1:
         messages.error(request, "같은 거래처의 판매만 통합할 수 있습니다.")
         return redirect("erp:sales_list")
-    if any(sale.items.exclude(id__in=item_ids).exists() for sale in transactions):
+    if any(sale.items.filter(is_deleted=False).exclude(id__in=item_ids).exists() for sale in transactions):
         messages.error(request, "거래번호 통합은 해당 거래의 모든 품목을 선택해야 합니다.")
         return redirect("erp:sales_list")
     with transaction.atomic():
@@ -1800,7 +1800,7 @@ def sales_merge(request):
         target.save()
         target.refresh_totals()
     messages.success(request, f"선택 품목을 거래번호 {target.transaction_no}로 통합했습니다.")
-    return redirect("erp:sales_list")
+    return redirect("erp:sale_transaction_detail", pk=target.pk)
 
 
 @require_POST

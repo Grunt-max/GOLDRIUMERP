@@ -258,6 +258,78 @@ class SaleStructureTests(TestCase):
         self.assertContains(ledger, "RET-001")
         self.assertContains(ledger, "반품")
 
+    def test_split_lasertech_customer_can_be_selected_for_sale(self):
+        lasertech_coco = Customer.objects.create(
+            name="레이저테크_코코", customer_type="sales",
+        )
+        response = self.client.get(reverse("erp:sale_create"))
+        self.assertContains(response, "레이저테크_코코")
+
+        data = {
+            "header-customer": lasertech_coco.pk,
+            "header-ordered_at": "2026-09-03",
+            "header-status": "new",
+            "header-memo": "",
+            "lines-TOTAL_FORMS": "1",
+            "lines-INITIAL_FORMS": "0",
+            "lines-MIN_NUM_FORMS": "0",
+            "lines-MAX_NUM_FORMS": "1000",
+            "lines-0-entry_type": "sale",
+            "lines-0-model_number": "1.5mm",
+            "lines-0-material": self.material_18.pk,
+            "lines-0-color": self.color_p.pk,
+            "lines-0-weight": "1.000",
+            "lines-0-loss_rate": "3",
+            "lines-0-quantity": "1",
+            "lines-0-unit_price": "40000",
+            "lines-0-memo": "",
+        }
+        response = self.client.post(reverse("erp:sale_create"), data)
+        self.assertRedirects(response, reverse("erp:sales_list"))
+        self.assertTrue(
+            SaleItem.objects.filter(transaction__customer=lasertech_coco).exists()
+        )
+
+    def test_merge_ignores_soft_deleted_items_and_opens_combined_statement(self):
+        first = SaleTransaction.objects.create(
+            transaction_no="26090300001", customer=self.customer,
+            sale_date=date(2026, 9, 3),
+        )
+        first_item = SaleItem.objects.create(
+            transaction=first, entry_type="sale", model_number="1.3mm",
+            material=self.material_18, color=self.color_p, weight=Decimal("10"),
+            quantity=1, loss_rate=0, unit_price=40000,
+        )
+        SaleItem.objects.create(
+            transaction=first, entry_type="sale", model_number="삭제품목",
+            material=self.material_18, weight=Decimal("1"), quantity=1,
+            loss_rate=0, unit_price=1, is_deleted=True,
+        )
+        second = SaleTransaction.objects.create(
+            transaction_no="26090300003", customer=self.customer,
+            sale_date=date(2026, 9, 3),
+        )
+        second_item = SaleItem.objects.create(
+            transaction=second, entry_type="sale", model_number="1.5mm",
+            material=self.material_18, color=self.color_p, weight=Decimal("4.5"),
+            quantity=1, loss_rate=0, unit_price=40000,
+        )
+
+        response = self.client.post(reverse("erp:sales_merge"), {
+            "order_ids": [first_item.pk, second_item.pk],
+        })
+
+        self.assertRedirects(
+            response, reverse("erp:sale_transaction_detail", args=[first.pk])
+        )
+        self.assertFalse(SaleTransaction.objects.filter(pk=second.pk).exists())
+        statement = self.client.get(
+            reverse("erp:sale_transaction_detail", args=[first.pk])
+        )
+        self.assertContains(statement, "1.3mm", count=2)
+        self.assertContains(statement, "1.5mm", count=2)
+        self.assertNotContains(statement, "삭제품목")
+
     def test_popup_sale_registration_returns_auto_close_page(self):
         data = {
             "_popup": "1",
