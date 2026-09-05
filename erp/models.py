@@ -337,6 +337,10 @@ class DailyOrderSequence(models.Model):
 
 
 class DailyActivity(models.Model):
+    STATUS_CHOICES = [("planned", "계획"), ("in_progress", "진행 중"), ("done", "완료")]
+    status = models.CharField("처리 상태", max_length=20, choices=STATUS_CHOICES, default="done")
+    result = models.TextField("처리 결과", max_length=1000, blank=True)
+    completed_at = models.DateTimeField("처리 완료일시", null=True, blank=True)
     activity_date = models.DateField("행적일", default=timezone.localdate, db_index=True)
     content = models.TextField("업무 내용", max_length=1000)
     image = models.FileField(

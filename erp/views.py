@@ -1,5 +1,6 @@
 from decimal import Decimal
 import calendar
+import csv
 from datetime import date, timedelta
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -8,7 +9,7 @@ from django.core.files.base import ContentFile
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Q
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -16,7 +17,7 @@ from django.utils.dateparse import parse_date
 from django.views.decorators.http import require_POST
 from .access import master_reauthentication_required
 from .gold_prices import collect_gold_prices
-from .forms import CompanyProfileForm, CustomerForm, DailyActivityForm, GoldLedgerEntryForm, GoldPriceForm, MaterialForm, OpenMarketChannelSettingForm, OpenMarketProductForm, OrderForm, ProductColorForm, ProductForm, PurchaseHeaderForm, PurchaseLineFormSet, PurchaseSupplierForm, SaleHeaderForm, SaleLineFormSet
+from .forms import CompanyProfileForm, CustomerForm, DailyActivityForm, DailyActivityPlanForm, GoldLedgerEntryForm, GoldPriceForm, MaterialForm, OpenMarketChannelSettingForm, OpenMarketProductForm, OrderForm, ProductColorForm, ProductForm, PurchaseHeaderForm, PurchaseLineFormSet, PurchaseSupplierForm, SaleHeaderForm, SaleLineFormSet
 from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, Factory, GoldLedgerEntry, GoldPrice, MarketplaceProduct, Material, OpenMarketChannelOffer, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketVariant, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleItem, SaleTransaction, generate_transaction_no
 from .open_market_aliases import CHANNEL_ONLY_FIELDS, COMMON_FIELD_ALIASES
 from .marketplaces import MarketplaceError, channel_configuration, fetch_coupang_products, fetch_naver_products
@@ -812,14 +813,21 @@ def gold_price_list(request):
     })
 
 
-def daily_activity_list(request):
+def daily_activity_list(request, activity_form=None):
     today = timezone.localdate()
+    try:
+        selected_date = parse_date(request.GET.get("date", "")) or today
+    except ValueError:
+        selected_date = today
+    if activity_form is not None:
+        selected_date = activity_form.cleaned_data.get("activity_date") or selected_date
     month_text = request.GET.get("month", f"{today:%Y-%m}")
     try:
         selected_month = date.fromisoformat(f"{month_text}-01")
     except ValueError:
         selected_month = today.replace(day=1)
-    selected_date = parse_date(request.GET.get("date", "")) or today
+    if activity_form is not None or "month" not in request.GET:
+        selected_month = selected_date.replace(day=1)
     day_activities = DailyActivity.objects.filter(
         activity_date=selected_date, is_deleted=False
     ).select_related("created_by").prefetch_related("photos")
@@ -859,15 +867,19 @@ def daily_activity_list(request):
         "day_shipments": day_shipments,
         "day_orders": day_orders,
         "day_gold_entries": day_gold_entries,
-        "activity_form": DailyActivityForm(initial={"activity_date": selected_date}),
-    })
+        "activity_form": activity_form if activity_form is not None else DailyActivityPlanForm(initial={"activity_date": selected_date}),
+    }, status=400 if activity_form is not None else 200)
 
 
 @require_POST
+@transaction.atomic
 def daily_activity_create(request):
-    form = DailyActivityForm(request.POST, request.FILES)
+    form_class = DailyActivityPlanForm if request.POST.get("entry_kind") == "plan" else DailyActivityForm
+    form = form_class(request.POST, request.FILES)
     if form.is_valid():
         activity = form.save(commit=False)
+        if activity.status == "done":
+            activity.completed_at = timezone.now()
         if request.user.is_authenticated:
             activity.created_by = request.user
         activity.save()
@@ -876,8 +888,10 @@ def daily_activity_create(request):
         messages.success(request, "당일 행적을 등록했습니다.")
     else:
         messages.error(request, "행적 날짜와 업무 내용을 확인하세요.")
+        if request.POST.get("entry_kind") == "plan":
+            return daily_activity_list(request, activity_form=form)
     if request.POST.get("return_to") == "activity_list":
-        activity_date = request.POST.get("activity_date", "")
+        activity_date = str(form.cleaned_data.get("activity_date") or timezone.localdate())
         return redirect(f"{request.path.replace('/new/', '/')}?date={activity_date}&month={activity_date[:7]}")
     return redirect("erp:dashboard")
 
@@ -890,6 +904,43 @@ def daily_activity_delete(request, pk):
     activity.save(update_fields=["is_deleted", "deleted_at"])
     messages.success(request, "당일 행적을 삭제 처리했습니다.")
     return redirect(f"/activities/?date={activity.activity_date}&month={activity.activity_date:%Y-%m}")
+
+
+@require_POST
+def daily_activity_update(request, pk):
+    activity = get_object_or_404(DailyActivity, pk=pk, is_deleted=False)
+    status = request.POST.get("status")
+    result = request.POST.get("result", "").strip()
+    if status not in dict(DailyActivity.STATUS_CHOICES) or len(result) > 1000:
+        return HttpResponseBadRequest("처리 상태와 결과를 확인하세요.")
+    activity.completed_at = (activity.completed_at or timezone.now()) if status == "done" else None
+    activity.status, activity.result = status, result
+    activity.save(update_fields=["status", "result", "completed_at"])
+    return redirect(f"/activities/?date={activity.activity_date}&month={activity.activity_date:%Y-%m}")
+
+
+def daily_activity_export(request):
+    date_text = request.GET.get("date", "")
+    try:
+        selected = parse_date(date_text) if date_text else timezone.localdate()
+    except ValueError:
+        return HttpResponseBadRequest("날짜를 확인하세요.")
+    if selected is None:
+        return HttpResponseBadRequest("날짜를 확인하세요.")
+    response = HttpResponse(content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = f'attachment; filename="activities-{selected}.csv"'
+    response["Cache-Control"] = "private, no-store"
+    response.write("\ufeff")
+    writer = csv.writer(response)
+    writer.writerow(["행적일", "상태", "업무 내용", "처리 결과", "작성자", "완료일시"])
+    def safe(value):
+        text = str(value or "")
+        return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) or text.startswith(("\t", "\r", "\n")) else text
+    for activity in DailyActivity.objects.filter(activity_date=selected, is_deleted=False).select_related("created_by"):
+        writer.writerow([safe(value) for value in [activity.activity_date, activity.get_status_display(),
+            activity.content, activity.result, activity.created_by,
+            timezone.localtime(activity.completed_at).isoformat() if activity.completed_at else ""]])
+    return response
 
 
 def gold_ledger_list(request):
