@@ -13,7 +13,7 @@ from django.utils import timezone
 from PIL import Image
 
 from erp.forms import CustomerForm, SaleLineForm
-from erp.models import CompanyProfile, Customer, DailyActivity, Factory, GoldLedgerEntry, GoldPrice, Material, Order, Product, ProductAlias, ProductColor, ProductWeightProfile, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleItem, SaleTransaction, UserAccessProfile, generate_transaction_no
+from erp.models import CompanyProfile, Customer, DailyActivity, Factory, GoldLedgerEntry, GoldPrice, Material, Order, Product, ProductAlias, ProductColor, ProductWeightProfile, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleCustomerChangeLog, SaleItem, SaleTransaction, UserAccessProfile, generate_transaction_no
 from erp.product_catalog import rebuild_product_weight_profiles
 from erp.views import monthly_sales_metrics
 
@@ -63,6 +63,70 @@ class SaleStructureTests(TestCase):
         self.assertEqual(rows["로프 미수"]["labor_receivable"], Decimal("7000"))
         self.assertContains(response, "코코 미수")
         self.assertContains(response, "로프 미수")
+
+    def test_change_sale_customer_by_transaction_no_and_write_audit_log(self):
+        new_customer = Customer.objects.create(name="변경 판매처", customer_type="sales")
+        old_account = ReceivableAccount.objects.create(customer=self.customer, name="코코 미수")
+        new_account = ReceivableAccount.objects.create(customer=new_customer, name="코코 미수")
+        sale = SaleTransaction.objects.create(
+            transaction_no="26091100001", customer=self.customer, sale_date=date(2026, 9, 11),
+        )
+        item = SaleItem.objects.create(
+            transaction=sale, receivable_account=old_account, entry_type="sale", model_number="CHANGE-1",
+            material=self.material_24, weight=Decimal("1"), quantity=1, loss_rate=0, unit_price=1000,
+        )
+
+        response = self.client.post(reverse("erp:sales_change_customer"), {
+            "transaction_no": sale.transaction_no,
+            "new_customer": new_customer.pk,
+            "reason": "거래처 오입력 정정",
+        })
+
+        self.assertRedirects(response, reverse("erp:sales_list"))
+        sale.refresh_from_db()
+        item.refresh_from_db()
+        self.assertEqual(sale.customer, new_customer)
+        self.assertEqual(item.receivable_account, new_account)
+        log = SaleCustomerChangeLog.objects.get(transaction=sale)
+        self.assertEqual(log.transaction_no, "26091100001")
+        self.assertEqual(log.previous_customer, self.customer)
+        self.assertEqual(log.new_customer, new_customer)
+        self.assertEqual(log.changed_by, self.user)
+        self.assertEqual(log.reason, "거래처 오입력 정정")
+        self.assertEqual(log.account_change_summary, "코코 미수→코코 미수")
+
+    def test_change_sale_customer_clears_old_customer_receivable_account_when_no_match(self):
+        new_customer = Customer.objects.create(name="기본미수 판매처", customer_type="sales")
+        old_account = ReceivableAccount.objects.create(customer=self.customer, name="이전 전용 미수")
+        sale = SaleTransaction.objects.create(
+            transaction_no="26091100002", customer=self.customer, sale_date=date(2026, 9, 11),
+        )
+        item = SaleItem.objects.create(
+            transaction=sale, receivable_account=old_account, entry_type="sale", model_number="CHANGE-2",
+            material=self.material_24, weight=Decimal("1"), quantity=1, loss_rate=0, unit_price=1000,
+        )
+
+        self.client.post(reverse("erp:sales_change_customer"), {
+            "transaction_no": sale.transaction_no, "new_customer": new_customer.pk,
+        })
+
+        item.refresh_from_db()
+        self.assertIsNone(item.receivable_account)
+        self.assertEqual(
+            SaleCustomerChangeLog.objects.get(transaction=sale).account_change_summary,
+            "이전 전용 미수→기본 미수",
+        )
+
+    def test_change_sale_customer_rejects_unknown_number_and_same_customer_without_log(self):
+        sale = SaleTransaction.objects.create(
+            transaction_no="26091100003", customer=self.customer, sale_date=date(2026, 9, 11),
+        )
+        url = reverse("erp:sales_change_customer")
+        self.client.post(url, {"transaction_no": "99999999999", "new_customer": self.customer.pk})
+        self.client.post(url, {"transaction_no": sale.transaction_no, "new_customer": self.customer.pk})
+        self.assertFalse(SaleCustomerChangeLog.objects.exists())
+        sale.refresh_from_db()
+        self.assertEqual(sale.customer, self.customer)
 
     def test_account_opening_balance_replaces_pre_cutoff_history_and_adds_later_assigned_sales(self):
         self.customer.receivable_accounts_enabled = True

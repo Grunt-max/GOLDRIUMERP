@@ -46,6 +46,7 @@ urlpatterns = [
     path("sales/split/", views.sales_split, name="sales_split"),
     path("sales/return/", views.sales_return, name="sales_return"),
     path("sales/delete/", views.sales_soft_delete, name="sales_soft_delete"),
+    path("sales/change-customer/", views.sales_change_customer, name="sales_change_customer"),
     path("customers/", views.customer_list, name="customer_list"),
     path("customers/lookup/", views.customer_lookup, name="customer_lookup"),
     path("customers/new/", views.customer_create, name="customer_create"),

@@ -601,6 +601,37 @@ class SaleTransaction(models.Model):
             ])
 
 
+class SaleCustomerChangeLog(models.Model):
+    """Immutable audit trail for changing the customer on a sale transaction."""
+
+    transaction = models.ForeignKey(
+        SaleTransaction, verbose_name="판매거래", on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="customer_change_logs",
+    )
+    transaction_no = models.CharField("거래번호", max_length=30, db_index=True)
+    previous_customer = models.ForeignKey(
+        Customer, verbose_name="변경 전 거래처", on_delete=models.PROTECT,
+        related_name="sale_customer_changes_from",
+    )
+    new_customer = models.ForeignKey(
+        Customer, verbose_name="변경 후 거래처", on_delete=models.PROTECT,
+        related_name="sale_customer_changes_to",
+    )
+    changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, verbose_name="변경자", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="sale_customer_change_logs",
+    )
+    reason = models.CharField("변경 사유", max_length=200, blank=True)
+    account_change_summary = models.CharField("미수계정 처리", max_length=300, blank=True)
+    changed_at = models.DateTimeField("변경일시", auto_now_add=True)
+
+    class Meta:
+        ordering = ["-changed_at", "-id"]
+
+    def __str__(self):
+        return f"{self.transaction_no}: {self.previous_customer} → {self.new_customer}"
+
+
 class SaleItem(models.Model):
     ENTRY_TYPE_CHOICES = [
         ("sale", "판매"), ("return", "반품"), ("payment", "결제"),

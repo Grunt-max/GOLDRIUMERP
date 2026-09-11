@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, DailySaleSequence, Factory, GoldLedgerEntry, GoldPrice, MarketplaceProduct, Material, OpenMarketChannelOffer, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketProductImage, OpenMarketVariant, Order, Product, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, SaleItem, SaleTransaction
+from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, DailySaleSequence, Factory, GoldLedgerEntry, GoldPrice, MarketplaceProduct, Material, OpenMarketChannelOffer, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketProductImage, OpenMarketVariant, Order, Product, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, SaleCustomerChangeLog, SaleItem, SaleTransaction
 
 
 @admin.register(Material)
@@ -49,6 +49,22 @@ class SaleTransactionAdmin(admin.ModelAdmin):
     list_filter = ("status", "sale_date")
     search_fields = ("transaction_no", "customer__name")
     inlines = [SaleItemInline]
+
+
+@admin.register(SaleCustomerChangeLog)
+class SaleCustomerChangeLogAdmin(admin.ModelAdmin):
+    list_display = ("transaction_no", "previous_customer", "new_customer", "changed_by", "changed_at")
+    search_fields = ("transaction_no", "previous_customer__name", "new_customer__name", "reason")
+    readonly_fields = (
+        "transaction", "transaction_no", "previous_customer", "new_customer",
+        "changed_by", "reason", "account_change_summary", "changed_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(DailySaleSequence)

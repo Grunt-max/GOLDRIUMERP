@@ -17,6 +17,7 @@ ROUTE_SECTIONS = {
     "sale_transaction_detail": "sales", "receivables_list": "sales", "customer_ledger": "sales",
     "customer_sales_summary": "sales", "customer_sales_history": "sales", "sales_merge": "sales",
     "sales_split": "sales", "sales_return": "sales", "sales_soft_delete": "sales",
+    "sales_change_customer": "sales",
     "customer_list": "customers", "customer_lookup": "customers", "customer_create": "customers",
     "customer_edit": "customers", "customer_delete": "customers",
     "product_list": "products", "product_search": "products", "product_create": "products",

@@ -18,7 +18,7 @@ from django.views.decorators.http import require_POST
 from .access import master_reauthentication_required
 from .gold_prices import collect_gold_prices
 from .forms import CompanyProfileForm, CustomerForm, DailyActivityForm, DailyActivityPlanForm, GoldLedgerEntryForm, GoldPriceForm, MaterialForm, OpenMarketChannelSettingForm, OpenMarketProductForm, OrderForm, ProductColorForm, ProductForm, PurchaseHeaderForm, PurchaseLineFormSet, PurchaseSupplierForm, SaleHeaderForm, SaleLineFormSet
-from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, Factory, GoldLedgerEntry, GoldPrice, MarketplaceProduct, Material, OpenMarketChannelOffer, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketVariant, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleItem, SaleTransaction, generate_transaction_no
+from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, Factory, GoldLedgerEntry, GoldPrice, MarketplaceProduct, Material, OpenMarketChannelOffer, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketVariant, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleCustomerChangeLog, SaleItem, SaleTransaction, generate_transaction_no
 from .open_market_aliases import CHANNEL_ONLY_FIELDS, COMMON_FIELD_ALIASES
 from .marketplaces import MarketplaceError, channel_configuration, fetch_coupang_products, fetch_naver_products
 from .marketplace_transformers import build_channel_preview
@@ -1663,6 +1663,9 @@ def sales_list(request):
         "entry_type_summary": entry_type_summary.values(), "include_deleted": include_deleted,
         "page_range": page_obj.paginator.get_elided_page_range(page_obj.number, on_each_side=2, on_ends=1),
         "page_query": page_query_params.urlencode(),
+        "customer_change_logs": SaleCustomerChangeLog.objects.select_related(
+            "previous_customer", "new_customer", "changed_by"
+        )[:20],
     })
 
 
@@ -1792,6 +1795,75 @@ def sales_soft_delete(request):
         for sale in transactions:
             sale.refresh_totals()
     messages.success(request, f"선택한 판매 품목 {len(items)}건을 삭제 처리했습니다.")
+    return redirect("erp:sales_list")
+
+
+@require_POST
+def sales_change_customer(request):
+    transaction_no = request.POST.get("transaction_no", "").strip()
+    new_customer_id = request.POST.get("new_customer", "").strip()
+    reason = request.POST.get("reason", "").strip()
+    if not transaction_no or not new_customer_id.isdigit():
+        messages.error(request, "거래번호와 변경할 거래처를 모두 입력하세요.")
+        return redirect("erp:sales_list")
+    if len(reason) > 200:
+        messages.error(request, "변경 사유는 200자 이내로 입력하세요.")
+        return redirect("erp:sales_list")
+
+    new_customer = Customer.objects.filter(pk=new_customer_id, customer_type="sales").first()
+    if new_customer is None:
+        messages.error(request, "변경할 판매 거래처를 찾을 수 없습니다.")
+        return redirect("erp:sales_list")
+
+    with transaction.atomic():
+        sale = (
+            SaleTransaction.objects.select_for_update()
+            .select_related("customer")
+            .filter(transaction_no=transaction_no)
+            .first()
+        )
+        if sale is None:
+            messages.error(request, f"거래번호 {transaction_no}를 찾을 수 없습니다.")
+            return redirect("erp:sales_list")
+        if sale.customer_id == new_customer.id:
+            messages.error(request, "현재 거래처와 변경할 거래처가 같습니다.")
+            return redirect("erp:sales_list")
+
+        previous_customer = sale.customer
+        target_accounts = {
+            account.name.strip().casefold(): account
+            for account in new_customer.receivable_accounts.filter(active=True)
+        }
+        account_changes = []
+        items = list(sale.items.select_for_update().select_related("receivable_account"))
+        for item in items:
+            old_account = item.receivable_account
+            if old_account is None or old_account.customer_id == new_customer.id:
+                continue
+            replacement = target_accounts.get(old_account.name.strip().casefold())
+            item.receivable_account = replacement
+            item.save(update_fields=["receivable_account"])
+            account_changes.append(
+                f"{old_account.name}→{replacement.name if replacement else '기본 미수'}"
+            )
+
+        sale.customer = new_customer
+        sale.save(update_fields=["customer"])
+        account_summary = ", ".join(dict.fromkeys(account_changes))
+        SaleCustomerChangeLog.objects.create(
+            transaction=sale,
+            transaction_no=sale.transaction_no,
+            previous_customer=previous_customer,
+            new_customer=new_customer,
+            changed_by=request.user if request.user.is_authenticated else None,
+            reason=reason,
+            account_change_summary=account_summary[:300],
+        )
+
+    messages.success(
+        request,
+        f"거래번호 {transaction_no}의 거래처를 {previous_customer.name}에서 {new_customer.name}(으)로 변경했습니다.",
+    )
     return redirect("erp:sales_list")
 
 
