@@ -1800,11 +1800,19 @@ def sales_soft_delete(request):
 
 @require_POST
 def sales_change_customer(request):
-    transaction_no = request.POST.get("transaction_no", "").strip()
+    transaction_nos = list(dict.fromkeys(
+        value.strip() for value in request.POST.getlist("transaction_nos") if value.strip()
+    ))
+    if not transaction_nos:
+        single_transaction_no = request.POST.get("transaction_no", "").strip()
+        transaction_nos = [single_transaction_no] if single_transaction_no else []
     new_customer_id = request.POST.get("new_customer", "").strip()
     reason = request.POST.get("reason", "").strip()
-    if not transaction_no or not new_customer_id.isdigit():
-        messages.error(request, "거래번호와 변경할 거래처를 모두 입력하세요.")
+    if not transaction_nos or not new_customer_id.isdigit():
+        messages.error(request, "판매 자료를 선택하고 변경할 거래처를 입력하세요.")
+        return redirect("erp:sales_list")
+    if len(transaction_nos) > 100:
+        messages.error(request, "거래처 변경은 한 번에 거래번호 100건까지 처리할 수 있습니다.")
         return redirect("erp:sales_list")
     if len(reason) > 200:
         messages.error(request, "변경 사유는 200자 이내로 입력하세요.")
@@ -1816,54 +1824,58 @@ def sales_change_customer(request):
         return redirect("erp:sales_list")
 
     with transaction.atomic():
-        sale = (
+        sales = list(
             SaleTransaction.objects.select_for_update()
             .select_related("customer")
-            .filter(transaction_no=transaction_no)
-            .first()
+            .filter(transaction_no__in=transaction_nos)
         )
-        if sale is None:
-            messages.error(request, f"거래번호 {transaction_no}를 찾을 수 없습니다.")
+        sales_by_no = {sale.transaction_no: sale for sale in sales}
+        missing_nos = [number for number in transaction_nos if number not in sales_by_no]
+        if missing_nos:
+            messages.error(request, f"거래번호 {', '.join(missing_nos)}를 찾을 수 없습니다.")
             return redirect("erp:sales_list")
-        if sale.customer_id == new_customer.id:
+        change_targets = [sales_by_no[number] for number in transaction_nos if sales_by_no[number].customer_id != new_customer.id]
+        skipped_count = len(sales) - len(change_targets)
+        if not change_targets:
             messages.error(request, "현재 거래처와 변경할 거래처가 같습니다.")
             return redirect("erp:sales_list")
 
-        previous_customer = sale.customer
         target_accounts = {
             account.name.strip().casefold(): account
             for account in new_customer.receivable_accounts.filter(active=True)
         }
-        account_changes = []
-        items = list(sale.items.select_for_update().select_related("receivable_account"))
-        for item in items:
-            old_account = item.receivable_account
-            if old_account is None or old_account.customer_id == new_customer.id:
-                continue
-            replacement = target_accounts.get(old_account.name.strip().casefold())
-            item.receivable_account = replacement
-            item.save(update_fields=["receivable_account"])
-            account_changes.append(
-                f"{old_account.name}→{replacement.name if replacement else '기본 미수'}"
+        for sale in change_targets:
+            previous_customer = sale.customer
+            account_changes = []
+            items = list(sale.items.select_for_update().select_related("receivable_account"))
+            for item in items:
+                old_account = item.receivable_account
+                if old_account is None or old_account.customer_id == new_customer.id:
+                    continue
+                replacement = target_accounts.get(old_account.name.strip().casefold())
+                item.receivable_account = replacement
+                item.save(update_fields=["receivable_account"])
+                account_changes.append(
+                    f"{old_account.name}→{replacement.name if replacement else '기본 미수'}"
+                )
+
+            sale.customer = new_customer
+            sale.save(update_fields=["customer"])
+            account_summary = ", ".join(dict.fromkeys(account_changes))
+            SaleCustomerChangeLog.objects.create(
+                transaction=sale,
+                transaction_no=sale.transaction_no,
+                previous_customer=previous_customer,
+                new_customer=new_customer,
+                changed_by=request.user if request.user.is_authenticated else None,
+                reason=reason,
+                account_change_summary=account_summary[:300],
             )
 
-        sale.customer = new_customer
-        sale.save(update_fields=["customer"])
-        account_summary = ", ".join(dict.fromkeys(account_changes))
-        SaleCustomerChangeLog.objects.create(
-            transaction=sale,
-            transaction_no=sale.transaction_no,
-            previous_customer=previous_customer,
-            new_customer=new_customer,
-            changed_by=request.user if request.user.is_authenticated else None,
-            reason=reason,
-            account_change_summary=account_summary[:300],
-        )
-
-    messages.success(
-        request,
-        f"거래번호 {transaction_no}의 거래처를 {previous_customer.name}에서 {new_customer.name}(으)로 변경했습니다.",
-    )
+    result_message = f"선택한 거래 {len(change_targets)}건의 거래처를 {new_customer.name}(으)로 변경했습니다."
+    if skipped_count:
+        result_message += f" 이미 같은 거래처인 {skipped_count}건은 제외했습니다."
+    messages.success(request, result_message)
     return redirect("erp:sales_list")
 
 

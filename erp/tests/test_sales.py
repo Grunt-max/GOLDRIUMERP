@@ -128,6 +128,34 @@ class SaleStructureTests(TestCase):
         sale.refresh_from_db()
         self.assertEqual(sale.customer, self.customer)
 
+    def test_change_sale_customer_updates_each_selected_transaction_once(self):
+        new_customer = Customer.objects.create(name="일괄 변경 판매처", customer_type="sales")
+        sales = [
+            SaleTransaction.objects.create(
+                transaction_no=f"2609110000{index}", customer=self.customer, sale_date=date(2026, 9, 11),
+            )
+            for index in (4, 5)
+        ]
+        for index, sale in enumerate(sales):
+            SaleItem.objects.create(
+                transaction=sale, entry_type="sale", model_number=f"BATCH-{index}",
+                material=self.material_24, weight=Decimal("1"), quantity=1, loss_rate=0, unit_price=1000,
+            )
+
+        response = self.client.post(reverse("erp:sales_change_customer"), {
+            "transaction_nos": [sales[0].transaction_no, sales[0].transaction_no, sales[1].transaction_no],
+            "new_customer": new_customer.pk,
+            "reason": "일괄 정정",
+        })
+
+        self.assertRedirects(response, reverse("erp:sales_list"))
+        self.assertEqual(
+            set(SaleTransaction.objects.filter(pk__in=[sale.pk for sale in sales]).values_list("customer_id", flat=True)),
+            {new_customer.pk},
+        )
+        self.assertEqual(SaleCustomerChangeLog.objects.filter(new_customer=new_customer).count(), 2)
+        self.assertContains(self.client.get(reverse("erp:sales_list")), 'id="open-sale-customer-change"')
+
     def test_account_opening_balance_replaces_pre_cutoff_history_and_adds_later_assigned_sales(self):
         self.customer.receivable_accounts_enabled = True
         self.customer.save(update_fields=["receivable_accounts_enabled"])
