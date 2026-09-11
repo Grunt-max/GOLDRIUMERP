@@ -6,7 +6,7 @@
   <form method="post" action="{% url 'erp:order_create' %}" class="inline-quick-order" id="inline-quick-order-form">{% csrf_token %}
     <input type="hidden" name="source_type" value="quick"><input type="hidden" name="ordered_at" value="{{ today|date:'Y-m-d' }}"><input type="hidden" name="customer" id="inline-customer-id"><input type="hidden" name="delivery_type" value="finished"><input type="hidden" name="quantity" value="1"><input type="hidden" name="status" value="new">
     <label>거래처<div class="order-customer-search"><input type="text" id="inline-customer-text" class="field" list="order-customer-suggestions" autocomplete="off" placeholder="거래처명 입력"><button type="button" id="inline-customer-match" title="거래처 조회">⌕</button></div><small id="inline-customer-state">거래처명을 정확히 입력하세요.</small></label>
-    <label>빠른 주문 원문<textarea name="raw_order_text" id="inline-raw-order" class="field" rows="3" placeholder="14kp 1.3mm로프 42cm 1개 / 여유딸랑 / 0고리 마감"></textarea></label>
+    <label>빠른 주문 원문 (재질·색상·모델·길이 순서 자유, 상품 별칭 사용 가능)<textarea name="raw_order_text" id="inline-raw-order" class="field" rows="3" placeholder="14kp 1.3mm로프 42cm 1개 / 여유딸랑 / 0고리 마감"></textarea></label>
     <button type="submit">빠른 주문 등록</button>
   </form>
   <section class="order-dashboard-grid">

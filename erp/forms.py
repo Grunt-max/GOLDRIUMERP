@@ -8,6 +8,7 @@ from django.core.validators import FileExtensionValidator
 from django.forms import BaseFormSet, formset_factory
 from django.utils import timezone
 from django.db.models.functions import Lower, Trim
+from .quick_orders import parse_quick_order_lines, resolve_order_product
 from .models import CompanyProfile, Customer, DailyActivity, Factory, GoldLedgerEntry, GoldPrice, Material, OpenMarketChannelSetting, OpenMarketProduct, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleItem, SaleTransaction
 
 
@@ -29,55 +30,6 @@ class OpenMarketChannelSettingForm(forms.ModelForm):
                   "return_fee", "notice_type")
 
 
-QUICK_ORDER_PATTERN = re.compile(
-    r"^\s*(14\s*k|18\s*k|24\s*k|925\s*silver)\s*"
-    r"([pgwb]|핑크|옐로우|화이트|베이지)?\s+(.+?)\s+"
-    r"(\d+(?:\.\d+)?\s*(?:cm|m))"
-    r"(?:\s*(?:[xX*]\s*(\d+)|(\d+)\s*개))?\s*$",
-    re.IGNORECASE,
-)
-
-
-def parse_quick_order_lines(raw_text, default_quantity=1):
-    parsed, invalid = [], []
-    color_names = {"P": "핑크", "G": "옐로우", "W": "화이트", "B": "베이지", "베이지": "베이지"}
-    for line_number, source_line in enumerate(raw_text.splitlines(), 1):
-        line = source_line.strip()
-        if not line:
-            continue
-        parts = [part.strip() for part in line.split("/")]
-        order_text = parts[0]
-        match = QUICK_ORDER_PATTERN.match(order_text)
-        if not match:
-            invalid.append(line_number)
-            continue
-        material_name = re.sub(r"\s+", "", match.group(1)).upper()
-        if material_name == "925SILVER":
-            material_name = "925 Silver"
-        material = Material.objects.filter(name__iexact=material_name, active=True).first()
-        if not material:
-            invalid.append(line_number)
-            continue
-        color_code = (match.group(2) or "").upper()
-        length_spec = re.sub(r"\s+", "", match.group(4)).upper()
-        delivery_type = "finished" if length_spec.endswith("CM") else "semi"
-        parsed.append({
-            "source_line": line,
-            "material": material,
-            "color": color_names.get(color_code, match.group(2) or ""),
-            "model_number": match.group(3).strip(),
-            "length_spec": length_spec,
-            "delivery_type": delivery_type,
-            "option_detail": " / ".join(part for part in parts[1:] if part) if delivery_type == "finished" else "",
-            "quantity": (
-                Decimal(re.match(r"\d+(?:\.\d+)?", re.sub(r"\s+", "", match.group(4))).group())
-                if not re.sub(r"\s+", "", match.group(4)).upper().endswith("CM")
-                else Decimal(match.group(5) or match.group(6) or default_quantity or 1)
-            ),
-        })
-    return parsed, invalid
-
-
 class StyledForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -96,6 +48,7 @@ class MultipleFileField(forms.FileField):
 
 
 class DailyActivityForm(StyledForm):
+    status = forms.ChoiceField(label="처리 상태", choices=DailyActivity.STATUS_CHOICES, required=False, initial="planned")
     images = MultipleFileField(
         label="첨부 사진", required=False,
         widget=MultipleFileInput(attrs={"accept": ".jpg,.jpeg,.png,.webp,.gif"}),
@@ -104,16 +57,44 @@ class DailyActivityForm(StyledForm):
 
     class Meta:
         model = DailyActivity
-        fields = ["activity_date", "content"]
+        fields = ["activity_date", "status", "content", "result"]
         widgets = {
             "activity_date": forms.DateInput(attrs={"type": "date"}),
-            "content": forms.Textarea(attrs={"rows": 2, "placeholder": "오늘 처리한 업무를 입력하세요."}),
+            "content": forms.Textarea(attrs={"rows": 2, "placeholder": "계획하거나 처리한 업무를 입력하세요."}),
+            "result": forms.Textarea(attrs={"rows": 2, "placeholder": "처리 결과 (선택)"}),
         }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         if not self.is_bound:
             self.fields["activity_date"].initial = timezone.localdate()
+
+    def clean_status(self):
+        return self.cleaned_data.get("status") or "done"
+
+
+class DailyActivityPlanForm(DailyActivityForm):
+    """A plan is saved before any processing result is recorded."""
+    class Meta(DailyActivityForm.Meta):
+        fields = ["activity_date", "content"]
+        labels = {"content": "계획 내용"}
+        widgets = {
+            "activity_date": forms.DateInput(attrs={"type": "date"}),
+            "content": forms.Textarea(attrs={"rows": 3, "placeholder": "이 날짜에 할 업무를 입력하세요."}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields.pop("status", None)
+
+    def save(self, commit=True):
+        activity = super().save(commit=False)
+        activity.status = "planned"
+        activity.result = ""
+        activity.completed_at = None
+        if commit:
+            activity.save()
+        return activity
 
 
 class FactoryForm(StyledForm):
@@ -389,7 +370,7 @@ class OrderForm(StyledForm):
         if ordered_at and not cleaned.get("due_date"):
             cleaned["due_date"] = ordered_at + timedelta(days=7)
         model_number = (cleaned.get("model_number") or "").strip()
-        product = Product.objects.filter(code__iexact=model_number, active=True).first()
+        product = resolve_order_product(model_number)
         if product:
             cleaned["product"] = product
         else:

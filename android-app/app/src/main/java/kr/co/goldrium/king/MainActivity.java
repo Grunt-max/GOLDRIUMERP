@@ -1,6 +1,9 @@
 package kr.co.goldrium.king;
 
 import android.content.Intent;
+import android.app.DownloadManager;
+import android.os.Environment;
+import android.webkit.URLUtil;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
@@ -66,7 +69,43 @@ public class MainActivity extends ComponentActivity {
                 return true;
             }
         });
-        if (state == null) webView.loadUrl(ERP_URL); else webView.restoreState(state);
+        webView.setDownloadListener((url, userAgent, disposition, mimeType, size) -> {
+            Uri uri = Uri.parse(url);
+            if (!"https".equals(uri.getScheme()) || !Uri.parse(ERP_URL).getHost().equals(uri.getHost())) return;
+            try {
+                String filename = URLUtil.guessFileName(url, disposition, mimeType).replaceAll("[^a-zA-Z0-9._-]", "_");
+                DownloadManager.Request download = new DownloadManager.Request(uri);
+                String cookie = CookieManager.getInstance().getCookie(url);
+                if (cookie != null) download.addRequestHeader("Cookie", cookie);
+                download.addRequestHeader("User-Agent", userAgent);
+                download.setMimeType(mimeType);
+                download.setTitle(filename);
+                download.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    download.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, filename);
+                } else {
+                    download.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, filename);
+                }
+                ((DownloadManager) getSystemService(DOWNLOAD_SERVICE)).enqueue(download);
+                Toast.makeText(this, "다운로드를 시작했습니다. 완료 알림에서 파일을 여세요.", Toast.LENGTH_LONG).show();
+            } catch (Exception error) {
+                Toast.makeText(this, "다운로드를 시작할 수 없습니다. 연결과 저장 공간을 확인하세요.", Toast.LENGTH_LONG).show();
+            }
+        });
+        if (state == null) webView.loadUrl(destinationUrl(getIntent())); else webView.restoreState(state);
+    }
+
+    private String destinationUrl(Intent intent) {
+        String destination = intent.getStringExtra("activity_destination");
+        if ("entry".equals(destination)) return ERP_URL + "activities/#activity-entry";
+        if ("list".equals(destination)) return ERP_URL + "activities/";
+        return ERP_URL;
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        webView.loadUrl(destinationUrl(intent));
     }
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {

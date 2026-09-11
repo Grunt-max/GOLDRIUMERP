@@ -1,0 +1,50 @@
+<section class="activity-work" aria-label="당일행적 계획 및 처리">
+  <h3>계획 / 처리</h3>
+  <p>계획을 먼저 등록한 뒤, 해당 업무의 처리란에 진행 내용과 결과를 기록하세요.</p>
+  {% if erp_is_master %}
+  <form method="post" action="{% url 'erp:daily_activity_create' %}" class="activity-plan-form" enctype="multipart/form-data">
+    {% csrf_token %}
+    <input type="hidden" name="return_to" value="activity_list">
+    <input type="hidden" name="entry_kind" value="plan">
+    <h4>계획 등록</h4>
+    {% if activity_form.errors %}<div role="alert">{{ activity_form.errors }}<p>입력 내용을 확인하세요. 첨부 사진은 다시 선택해주세요.</p></div>{% endif %}
+    <label>계획일 {{ activity_form.activity_date }}</label>
+    <label>계획 내용 {{ activity_form.content }}</label>
+    <label>첨부 사진 {{ activity_form.images }}</label>
+    <button type="submit">계획 저장</button>
+  </form>
+  {% endif %}
+  <div class="activity-work-head" aria-hidden="true"><strong>계획란</strong><strong>처리란</strong></div>
+  {% for activity in day_activities %}
+  <article class="activity-work-row" id="activity-{{ activity.pk }}">
+    <section class="activity-plan-cell" aria-label="계획란">
+      <h4>계획 <small>#{{ activity.pk }}</small></h4>
+      <div class="activity-work-content">{{ activity.content|linebreaksbr }}</div>
+      <small>{{ activity.created_by|default:'미로그인' }} · {{ activity.created_at|date:'m-d H:i' }}</small>
+      <div class="activity-photo-grid">
+        {% if activity.image %}<a href="{{ activity.image.url }}" target="_blank" rel="noopener"><img src="{{ activity.image.url }}" alt="업무 첨부 사진"></a>{% endif %}
+        {% for photo in activity.photos.all %}<a href="{{ photo.image.url }}" target="_blank" rel="noopener"><img src="{{ photo.image.url }}" alt="업무 첨부 사진 {{ forloop.counter }}"></a>{% endfor %}
+      </div>
+      {% if erp_is_master %}
+      <form method="post" action="{% url 'erp:daily_activity_delete' activity.pk %}" onsubmit="return confirm('이 업무의 계획과 처리 내용을 삭제할까요?')">
+        {% csrf_token %}<button type="submit" class="activity-delete">업무 삭제</button>
+      </form>
+      {% endif %}
+    </section>
+    <section class="activity-result-cell" aria-label="처리란">
+      <h4>처리 <small>{{ activity.get_status_display }}</small></h4>
+      {% if erp_is_master %}
+      <form method="post" action="{% url 'erp:daily_activity_update' activity.pk %}" class="activity-result-form">
+        {% csrf_token %}
+        <label>처리 내용<textarea name="result" maxlength="1000" rows="4" placeholder="진행 내용이나 실제 처리한 결과를 입력하세요.">{{ activity.result }}</textarea></label>
+        <label>처리 상태<select name="status">{% for value, label in activity.STATUS_CHOICES %}<option value="{{ value }}" {% if value == activity.status %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+        <button type="submit">처리 저장</button>
+      </form>
+      {% else %}
+      <div class="activity-work-content">{{ activity.result|default:'아직 처리 내용이 없습니다.'|linebreaksbr }}</div>
+      {% endif %}
+      {% if activity.completed_at %}<small>완료: {{ activity.completed_at|date:'Y-m-d H:i' }}</small>{% endif %}
+    </section>
+  </article>
+  {% empty %}<p class="empty">등록된 업무가 없습니다. 계획란에 오늘 할 업무를 먼저 등록하세요.</p>{% endfor %}
+</section>

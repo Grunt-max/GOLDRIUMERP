@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:padding="12dp" android:background="#172B43">
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="골드리움 · 당일행적" android:textColor="#FFFFFF" android:textSize="17sp" />
+    <Button android:id="@+id/activity_add" android:layout_width="match_parent" android:layout_height="48dp"
+        android:text="계획·처리·사진 등록" />
+    <Button android:id="@+id/activity_list" android:layout_width="match_parent" android:layout_height="48dp"
+        android:text="업무 목록·다운로드" />
+</LinearLayout>

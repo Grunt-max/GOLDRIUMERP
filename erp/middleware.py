@@ -5,6 +5,7 @@ from .access import allowed_sections_for
 
 
 ROUTE_SECTIONS = {
+    "daily_activity_export": "activities", "daily_activity_update": "activities",
     "dashboard": "dashboard",
     "gold_price_list": "gold_prices", "gold_price_refresh": "gold_prices", "gold_price_save": "gold_prices",
     "order_list": "orders", "order_customer_outstanding": "orders", "order_create": "orders",
