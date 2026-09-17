@@ -993,10 +993,12 @@ def gold_ledger_list(request):
         rows.append({"date": item.entry_date, "type": row_type, "type_label": "매입처 금 불출" if row_type == "supplier_issue" else "우리공장 금 불출" if row_type == "own_factory_issue" else "재고 조정", "material": item.material, "actual": item.actual_weight, "pure": item.pure_gold_weight, "effect": item.gold_balance_effect, "source": item.reference_no, "memo": f"{destination} · {item.memo}" if item.memo else destination, "image": item.image, "manual": item})
     for item in payments:
         rows.append({"date": item.transaction.sale_date, "type": "customer_payment", "type_label": "거래처 금 결제", "material": item.material, "actual": item.weight, "pure": item.pure_gold_weight, "effect": item.pure_gold_weight, "source": item.transaction.transaction_no, "memo": item.transaction.customer.name, "image": None, "manual": None})
+    for item in purchases.filter(deduct_from_gold_balance=True):
+        rows.append({"date": item.purchase_date, "type": "purchase_issue", "type_label": "매입등록 금 차감", "material": item.material, "actual": item.actual_weight, "pure": item.pure_gold_weight, "effect": -item.pure_gold_weight, "source": item.reference_no, "memo": item.supplier.name + (f" · {item.item_name}" if item.item_name else ""), "image": item.image, "manual": None})
     if entry_type:
         rows = [row for row in rows if row["type"] == entry_type]
     rows.sort(key=lambda row: (row["date"], row["source"] or ""), reverse=True)
-    summary = {"customer_payment": Decimal("0"), "own_factory_issue": Decimal("0"), "supplier_issue": Decimal("0"), "purchase_pure": Decimal("0"), "purchase_loss": Decimal("0"), "balance_effect": Decimal("0")}
+    summary = {"customer_payment": Decimal("0"), "own_factory_issue": Decimal("0"), "supplier_issue": Decimal("0"), "purchase_issue": Decimal("0"), "purchase_pure": Decimal("0"), "purchase_loss": Decimal("0"), "balance_effect": Decimal("0")}
     for row in rows:
         if row["type"] in summary:
             summary[row["type"]] += row["pure"]
@@ -1008,13 +1010,17 @@ def gold_ledger_list(request):
 
     all_manual = GoldLedgerEntry.objects.filter(is_deleted=False, entry_type__in=("issue", "adjustment"))
     all_payments = SaleItem.objects.filter(entry_type="payment", is_deleted=False).exclude(transaction__status="cancel")
+    all_purchase_issues = PurchaseEntry.objects.filter(is_deleted=False, deduct_from_gold_balance=True)
     if ledger_start:
         all_manual = all_manual.filter(entry_date__gte=ledger_start)
         all_payments = all_payments.filter(transaction__sale_date__gte=ledger_start)
-    current_balance = sum((item.gold_balance_effect for item in all_manual), Decimal("0")) + sum((item.pure_gold_weight for item in all_payments), Decimal("0"))
+        all_purchase_issues = all_purchase_issues.filter(purchase_date__gte=ledger_start)
+    current_balance = (sum((item.gold_balance_effect for item in all_manual), Decimal("0"))
+        + sum((item.pure_gold_weight for item in all_payments), Decimal("0"))
+        - sum((item.pure_gold_weight for item in all_purchase_issues), Decimal("0")))
     return render(request, "erp/gold_ledger_list.html", {
         "entries": rows, "summary": summary, "current_balance": current_balance,
-        "entry_types": [("customer_payment", "거래처 금 결제"), ("own_factory_issue", "우리공장 금 불출"), ("supplier_issue", "매입처 금 불출"), ("adjustment", "재고 조정")],
+        "entry_types": [("customer_payment", "거래처 금 결제"), ("own_factory_issue", "우리공장 금 불출"), ("supplier_issue", "매입처 금 불출"), ("purchase_issue", "매입등록 금 차감"), ("adjustment", "재고 조정")],
         "start_date": start_date, "end_date": end_date, "selected_entry_type": entry_type,
         "include_all_data": include_all_data, "ledger_cutoff": closing.entry_date if closing else None,
         "entry_form": GoldLedgerEntryForm(),
@@ -1077,6 +1083,7 @@ def purchase_create(request):
                     continue
                 entry = line.save(commit=False)
                 entry.batch, entry.purchase_date, entry.supplier, entry.reference_no = batch, purchase_date, supplier, reference_no
+                entry.deduct_from_gold_balance = True
                 if data.get("loss_rate") is None:
                     entry.loss_rate = supplier.default_loss_rate if supplier.default_loss_rate is not None else entry.material.default_loss_rate
                 if request.user.is_authenticated:

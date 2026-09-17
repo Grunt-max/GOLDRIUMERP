@@ -1022,12 +1022,14 @@ class SaleStructureTests(TestCase):
         supplier = PurchaseSupplier.objects.create(name="외부 공장", default_loss_rate=Decimal("5"))
         purchase = PurchaseEntry.objects.create(purchase_date=date(2026, 8, 22), supplier=supplier, material=self.material_18, actual_weight=Decimal("4"), loss_rate=Decimal("5"))
         self.assertEqual(purchase.pure_gold_weight, Decimal("3.150"))
+        self.assertFalse(purchase.deduct_from_gold_balance)
         page = self.client.get(reverse("erp:gold_ledger_list"), {"start_date": "2026-08-01", "end_date": "2026-08-22"})
         self.assertContains(page, "거래처 금 결제")
         self.assertContains(page, "매입처 금매입량")
         self.assertNotContains(page, "타 공장 매입")
         self.assertEqual(page.context["summary"]["purchase_pure"], Decimal("3.150"))
         self.assertEqual(page.context["summary"]["purchase_loss"], Decimal("0.150"))
+        self.assertEqual(page.context["summary"]["purchase_issue"], Decimal("0"))
         self.assertEqual(page.context["summary"]["balance_effect"], Decimal("-15.550"))
         self.assertEqual(page.context["current_balance"], Decimal("-15.550"))
         purchase_page = self.client.get(reverse("erp:purchase_list"))
@@ -1063,10 +1065,23 @@ class SaleStructureTests(TestCase):
         self.assertEqual(rows[0].batch_id, rows[1].batch_id)
         self.assertEqual(rows[0].pure_gold_weight, Decimal("6.143"))
         self.assertEqual(rows[1].pure_gold_weight, Decimal("3.060"))
+        self.assertTrue(all(row.deduct_from_gold_balance for row in rows))
+        gold_page = self.client.get(reverse("erp:gold_ledger_list"), {
+            "start_date": "2026-08-01", "end_date": "2026-08-22",
+        })
+        self.assertEqual(gold_page.context["summary"]["purchase_issue"], Decimal("9.203"))
+        self.assertEqual(gold_page.context["summary"]["balance_effect"], Decimal("-9.203"))
+        self.assertEqual(gold_page.context["current_balance"], Decimal("-9.203"))
+        self.assertContains(gold_page, "매입등록 금 차감")
         metrics = monthly_sales_metrics(2026, 8)
         self.assertEqual(metrics["purchase_base_gold"], Decimal("8.850"))
         self.assertEqual(metrics["purchase_loss_gold"], Decimal("0.3525"))
         self.assertEqual(metrics["purchase_labor"], Decimal("150000"))
+        self.client.post(reverse("erp:purchase_delete", args=[rows[0].pk]))
+        after_delete = self.client.get(reverse("erp:gold_ledger_list"), {
+            "start_date": "2026-08-01", "end_date": "2026-08-22",
+        })
+        self.assertEqual(after_delete.context["current_balance"], Decimal("-3.060"))
 
         empty = self.client.post(reverse("erp:purchase_create"), {
             "header-purchase_date": "2026-08-22", "header-supplier": supplier.pk, "header-reference_no": "",
@@ -1075,6 +1090,32 @@ class SaleStructureTests(TestCase):
         self.assertEqual(empty.status_code, 200)
         self.assertContains(empty, "아무것도 입력되지 않았습니다")
         self.assertEqual(PurchaseEntry.objects.filter(supplier=supplier).count(), 2)
+
+    def test_purchase_gold_deduction_respects_closing_and_date_filter(self):
+        supplier = PurchaseSupplier.objects.create(name="마감 테스트 매입처")
+        factory = Factory.objects.create(name="마감 테스트 공장")
+        GoldLedgerEntry.objects.create(
+            entry_date=date(2026, 8, 22), factory=factory, entry_type="issue",
+            material=self.material_24, actual_weight=Decimal("1"), is_closing_transfer=True,
+        )
+        PurchaseEntry.objects.create(
+            purchase_date=date(2026, 8, 21), supplier=supplier, material=self.material_24,
+            actual_weight=Decimal("2"), deduct_from_gold_balance=True,
+        )
+        PurchaseEntry.objects.create(
+            purchase_date=date(2026, 8, 23), supplier=supplier, material=self.material_24,
+            actual_weight=Decimal("3"), deduct_from_gold_balance=True,
+        )
+        page = self.client.get(reverse("erp:gold_ledger_list"), {
+            "start_date": "2026-08-23", "end_date": "2026-08-23",
+        })
+        self.assertEqual(page.context["summary"]["purchase_issue"], Decimal("3.000"))
+        self.assertEqual(page.context["current_balance"], Decimal("-3.000"))
+        earlier_period = self.client.get(reverse("erp:gold_ledger_list"), {
+            "start_date": "2026-08-23", "end_date": "2026-08-22",
+        })
+        self.assertEqual(earlier_period.context["summary"]["purchase_issue"], Decimal("0"))
+        self.assertEqual(earlier_period.context["current_balance"], Decimal("-3.000"))
 
     def test_sale_labor_input_accepts_thousand_separators(self):
         form = SaleLineForm(data={

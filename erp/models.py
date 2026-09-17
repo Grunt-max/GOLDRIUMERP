@@ -524,6 +524,7 @@ class PurchaseEntry(models.Model):
     actual_weight = models.DecimalField("매입 중량(g)", max_digits=12, decimal_places=3)
     loss_rate = models.DecimalField("해리율(%)", max_digits=6, decimal_places=2, default=0)
     pure_gold_weight = models.DecimalField("순금 환산중량(g)", max_digits=14, decimal_places=3, default=0)
+    deduct_from_gold_balance = models.BooleanField("우리 금 시제 자동 차감", default=False, db_index=True)
     purchase_amount = models.DecimalField("매입 공임(원)", max_digits=14, decimal_places=0, default=0)
     reference_no = models.CharField("매입번호", max_length=30, blank=True)
     memo = models.CharField("비고", max_length=200, blank=True)
