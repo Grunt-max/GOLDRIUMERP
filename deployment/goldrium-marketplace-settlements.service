@@ -1,0 +1,16 @@
+[Unit]
+Description=Goldrium ERP marketplace settlement collection
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=goldrium
+Group=goldrium
+WorkingDirectory=/srv/goldrium/app
+EnvironmentFile=/etc/goldrium-erp.env
+ExecStart=/srv/goldrium/venv/bin/python manage.py sync_marketplace_orders naver
+ExecStart=/srv/goldrium/venv/bin/python manage.py sync_marketplace_orders coupang
+
+[Install]
+WantedBy=multi-user.target
