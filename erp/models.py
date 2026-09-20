@@ -773,6 +773,10 @@ class OpenMarketChannelSetting(models.Model):
     notice_type = models.CharField("상품정보고시 유형", max_length=100, blank=True, default="JEWELLERY")
     notice_data = models.JSONField("상품정보고시 상세", default=dict, blank=True)
     extra_attributes = models.JSONField("채널 전용 속성", default=dict, blank=True)
+    external_product_id = models.CharField("등록된 상품번호", max_length=120, blank=True)
+    upload_status = models.CharField("업로드 상태", max_length=30, blank=True)
+    last_upload_error = models.TextField("최근 업로드 오류", blank=True)
+    last_uploaded_at = models.DateTimeField("최근 업로드 시각", null=True, blank=True)
 
     class Meta:
         ordering = ["product", "channel"]

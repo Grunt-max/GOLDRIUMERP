@@ -52,7 +52,9 @@ class OpenMarketChannelSettingForm(forms.ModelForm):
         model = OpenMarketChannelSetting
         fields = ("category_code", "channel_product_name", "delivery_method", "delivery_company_code",
                   "outbound_location_code", "return_center_code", "delivery_fee_type", "delivery_fee",
-                  "return_fee", "notice_type")
+                  "return_fee", "notice_type", "notice_data", "extra_attributes")
+        widgets = {"notice_data": forms.Textarea(attrs={"rows": 5}),
+                   "extra_attributes": forms.Textarea(attrs={"rows": 5})}
 
 
 class StyledForm(forms.ModelForm):

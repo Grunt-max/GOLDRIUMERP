@@ -15,6 +15,9 @@ class MarketplaceReadOnlyTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="mykim9853", password="test-pass")
         self.client.force_login(self.user)
+        session = self.client.session
+        session["basic_management_verified_user_id"] = self.user.pk
+        session.save()
 
     def test_page_is_explicitly_read_only(self):
         response = self.client.get(reverse("erp:marketplace_channel_items", args=["naver"]))
@@ -55,6 +58,21 @@ class MarketplaceReadOnlyTests(TestCase):
         price = product.variants.get().cost_and_price("naver")
         self.assertEqual(price["gold_cost"], Decimal("15000"))
         self.assertEqual(price["total_cost"], Decimal("35000"))
+
+    @patch("erp.views.generate_product_content")
+    def test_workspace_generates_and_saves_channel_content(self, generate):
+        product = OpenMarketProduct.objects.create(code="AI-001", name="AI 목걸이")
+        generate.return_value = {
+            "naver_name": "네이버용 목걸이", "coupang_name": "쿠팡용 목걸이",
+            "summary": "상품 요약", "detail_html": "<div><h2>상세 설명</h2></div>", "sections": [],
+        }
+        response = self.client.post(reverse("erp:marketplace_workspace_generate", args=[product.pk]))
+        self.assertRedirects(response, reverse("erp:marketplace_workspace_edit", args=[product.pk]))
+        product.refresh_from_db()
+        self.assertEqual(product.description, "상품 요약")
+        self.assertIn("상세 설명", product.detail_page_html)
+        self.assertEqual(product.channel_settings.get(channel="naver").channel_product_name, "네이버용 목걸이")
+        self.assertEqual(product.channel_settings.get(channel="coupang").channel_product_name, "쿠팡용 목걸이")
 
     def test_channel_sales_aggregates_order_based_net_sales(self):
         MarketplaceSettlement.objects.create(

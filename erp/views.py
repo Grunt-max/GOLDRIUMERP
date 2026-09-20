@@ -22,6 +22,8 @@ from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto,
 from .open_market_aliases import CHANNEL_ONLY_FIELDS, COMMON_FIELD_ALIASES
 from .marketplaces import MarketplaceError, channel_configuration, fetch_coupang_products, fetch_coupang_settlements, fetch_naver_products, fetch_naver_settlements
 from .marketplace_transformers import build_channel_preview
+from .marketplace_ai import ProductContentError, generate_product_content
+from .marketplace_publish import publish_coupang, publish_naver, publish_readiness
 from .product_catalog import rebuild_product_weight_profiles
 
 
@@ -188,9 +190,73 @@ def marketplace_workspace_edit(request, pk=None):
         for variant in product.variants.filter(active=True):
             pricing_rows.append({"variant": variant, "naver": variant.cost_and_price("naver"),
                                  "coupang": variant.cost_and_price("coupang")})
+    publishing = {}
+    if product:
+        settings = {row.channel: row for row in product.channel_settings.all()}
+        for channel in ("naver", "coupang"):
+            publishing[channel] = {"errors": publish_readiness(product, channel), "setting": settings.get(channel)}
     return render(request, "erp/marketplace_workspace_edit.html", {
-        "form": form, "product": product, "pricing_rows": pricing_rows,
+        "form": form, "product": product, "pricing_rows": pricing_rows, "publishing": publishing,
     })
+
+
+@require_POST
+@master_reauthentication_required
+def marketplace_workspace_generate(request, pk):
+    product = get_object_or_404(OpenMarketProduct, pk=pk)
+    try:
+        content = generate_product_content(product)
+    except ProductContentError as exc:
+        messages.error(request, str(exc))
+        return redirect("erp:marketplace_workspace_edit", pk=pk)
+    with transaction.atomic():
+        product.description = content["summary"]
+        product.detail_page_html = content["detail_html"]
+        product.save(update_fields=["description", "detail_page_html", "updated_at"])
+        for channel, field in (("naver", "naver_name"), ("coupang", "coupang_name")):
+            setting, _ = OpenMarketChannelSetting.objects.get_or_create(product=product, channel=channel)
+            setting.channel_product_name = content[field]
+            setting.save(update_fields=["channel_product_name"])
+    messages.success(request, "GPT가 채널별 상품명과 긴 상세페이지 초안을 작성했습니다. 내용을 검토해 주세요.")
+    return redirect("erp:marketplace_workspace_edit", pk=pk)
+
+
+@require_POST
+@master_reauthentication_required
+def marketplace_workspace_publish(request, pk, channel):
+    if channel not in {"naver", "coupang"}:
+        return HttpResponseBadRequest("지원하지 않는 채널입니다.")
+    product = get_object_or_404(OpenMarketProduct.objects.prefetch_related("variants", "channel_settings"), pk=pk)
+    errors = publish_readiness(product, channel)
+    if errors:
+        messages.error(request, f"{channel} 등록 전 확인: " + " ".join(errors))
+        return redirect("erp:marketplace_workspace_edit", pk=pk)
+    setting = product.channel_settings.get(channel=channel)
+    try:
+        result = publish_naver(product) if channel == "naver" else publish_coupang(
+            product, request.build_absolute_uri(product.image.url)
+        )
+        external_id = (result.get("originProductNo") or result.get("smartstoreChannelProductNo")
+                       if channel == "naver" else result.get("data"))
+        if not external_id:
+            raise MarketplaceError(f"등록 응답에서 상품번호를 찾지 못했습니다: {str(result)[:500]}")
+    except (MarketplaceError, ValueError, TypeError) as exc:
+        setting.upload_status = "failed"
+        setting.last_upload_error = str(exc)
+        setting.save(update_fields=["upload_status", "last_upload_error"])
+        messages.error(request, f"{setting.get_channel_display()} 등록 실패: {exc}")
+        return redirect("erp:marketplace_workspace_edit", pk=pk)
+    setting.external_product_id = str(external_id)
+    setting.upload_status = "uploaded"
+    setting.last_upload_error = ""
+    setting.last_uploaded_at = timezone.now()
+    setting.save(update_fields=["external_product_id", "upload_status", "last_upload_error", "last_uploaded_at"])
+    target_settings = product.channel_settings.filter(channel__in=product.target_channels)
+    if target_settings.exists() and not target_settings.exclude(upload_status="uploaded").exists():
+        product.workspace_status = "uploaded"
+        product.save(update_fields=["workspace_status", "updated_at"])
+    messages.success(request, f"{setting.get_channel_display()}에 상품을 등록했습니다. 상품번호: {external_id}")
+    return redirect("erp:marketplace_workspace_edit", pk=pk)
 
 
 @transaction.atomic
