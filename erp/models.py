@@ -773,6 +773,23 @@ class OpenMarketChannelSetting(models.Model):
     notice_type = models.CharField("상품정보고시 유형", max_length=100, blank=True, default="JEWELLERY")
     notice_data = models.JSONField("상품정보고시 상세", default=dict, blank=True)
     extra_attributes = models.JSONField("채널 전용 속성", default=dict, blank=True)
+    naver_origin_status = models.CharField(
+        "네이버 판매 상태", max_length=20, default="SUSPENSION",
+        choices=[("SUSPENSION", "판매 중지"), ("SALE", "판매 중")],
+    )
+    naver_channel_display_status = models.CharField(
+        "네이버 전시 상태", max_length=20, default="SUSPENSION",
+        choices=[("SUSPENSION", "전시 중지"), ("ON", "전시 중")],
+    )
+    after_service_phone = models.CharField("A/S 전화번호", max_length=30, blank=True)
+    after_service_guide = models.CharField("A/S 안내", max_length=500, blank=True)
+    origin_area_code = models.CharField(
+        "원산지", max_length=2, default="00",
+        choices=[("00", "국산"), ("01", "원양산"), ("02", "수입산"),
+                 ("03", "기타-상세 설명 표시"), ("04", "기타-직접 입력"), ("05", "표기 의무 대상 아님")],
+    )
+    origin_area_content = models.CharField("원산지 직접 입력", max_length=200, blank=True)
+    minor_purchasable = models.BooleanField("미성년자 구매 가능", default=True)
     external_product_id = models.CharField("등록된 상품번호", max_length=120, blank=True)
     upload_status = models.CharField("업로드 상태", max_length=30, blank=True)
     last_upload_error = models.TextField("최근 업로드 오류", blank=True)

@@ -115,6 +115,12 @@ class MarketplaceReadOnlyTests(TestCase):
                 f"{prefix}-delivery_fee_type": "FREE", f"{prefix}-delivery_fee": "0",
                 f"{prefix}-return_fee": "3000", f"{prefix}-notice_type": "JEWELLERY",
                 f"{prefix}-notice_data": '{}', f"{prefix}-extra_attributes": '{}',
+                f"{prefix}-naver_origin_status": "SUSPENSION",
+                f"{prefix}-naver_channel_display_status": "SUSPENSION",
+                f"{prefix}-after_service_phone": "02-1234-5678",
+                f"{prefix}-after_service_guide": "판매자에게 문의",
+                f"{prefix}-origin_area_code": "00", f"{prefix}-origin_area_content": "",
+                f"{prefix}-minor_purchasable": "on",
             })
         response = self.client.post(reverse("erp:marketplace_workspace_edit", args=[product.pk]), data)
         self.assertRedirects(response, reverse("erp:marketplace_workspace_edit", args=[product.pk]))
@@ -128,6 +134,33 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertEqual(payload["originProduct"]["name"], "ORO")
         self.assertEqual(payload["originProduct"]["deliveryInfo"]["deliveryType"], "DELIVERY")
         self.assertEqual(payload["originProduct"]["deliveryInfo"]["claimDeliveryInfo"]["shippingAddressId"], 1)
+
+    @patch("erp.marketplace_publish._json_request")
+    @patch("erp.marketplace_publish._naver_upload_image", return_value="https://example.com/product.jpg")
+    @patch("erp.marketplace_publish._naver_token", return_value="token")
+    def test_naver_publish_sends_suspended_status_and_required_details(self, _token, _image, request_api):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from erp.marketplace_publish import publish_naver
+        from erp.models import OpenMarketChannelSetting
+        product = OpenMarketProduct.objects.create(
+            code="NAVER-001", name="네이버 상품", image=SimpleUploadedFile("item.jpg", b"image"),
+            detail_page_html="<p>상세</p>", pricing_material="silver", silver_price_per_gram=1000,
+            default_weight=Decimal("1"), base_labor_cost=10000,
+        )
+        OpenMarketVariant.objects.create(product=product, sku="NAVER-001-S925", base_variant="S925")
+        OpenMarketChannelSetting.objects.create(
+            product=product, channel="naver", category_code="50004168",
+            after_service_phone="02-1234-5678", after_service_guide="판매자에게 문의",
+        )
+        request_api.return_value = {"originProductNo": 1}
+        publish_naver(product)
+        body = request_api.call_args.kwargs["body"]
+        self.assertEqual(body["originProduct"]["statusType"], "SUSPENSION")
+        self.assertEqual(body["smartstoreChannelProduct"]["channelProductDisplayStatusType"], "SUSPENSION")
+        detail = body["originProduct"]["detailAttribute"]
+        self.assertEqual(detail["afterServiceInfo"]["afterServiceTelephoneNumber"], "02-1234-5678")
+        self.assertEqual(detail["originAreaInfo"]["originAreaCode"], "00")
+        self.assertTrue(detail["minorPurchasable"])
 
     def test_channel_sales_aggregates_order_based_net_sales(self):
         MarketplaceSettlement.objects.create(

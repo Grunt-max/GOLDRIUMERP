@@ -61,7 +61,9 @@ class OpenMarketChannelSettingForm(forms.ModelForm):
         model = OpenMarketChannelSetting
         fields = ("category_code", "channel_product_name", "delivery_method", "delivery_company_code",
                   "outbound_location_code", "return_center_code", "delivery_fee_type", "delivery_fee",
-                  "return_fee", "notice_type", "notice_data", "extra_attributes")
+                  "return_fee", "notice_type", "notice_data", "naver_origin_status",
+                  "naver_channel_display_status", "after_service_phone", "after_service_guide",
+                  "origin_area_code", "origin_area_content", "minor_purchasable", "extra_attributes")
         widgets = {"notice_data": forms.Textarea(attrs={"rows": 8, "spellcheck": "false"}),
                    "extra_attributes": forms.Textarea(attrs={"rows": 8, "spellcheck": "false"})}
 

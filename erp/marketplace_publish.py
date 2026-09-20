@@ -35,6 +35,11 @@ def publish_readiness(product, channel):
     if setting and setting.external_product_id: errors.append(f"이미 등록된 상품입니다: {setting.external_product_id}")
     if not _price(product, channel): errors.append("옵션 중량과 가격 기준을 입력하세요.")
     if not setting: return errors
+    if channel == "naver":
+        if not setting.after_service_phone: errors.append("네이버 A/S 전화번호를 입력하세요.")
+        if not setting.after_service_guide: errors.append("네이버 A/S 안내를 입력하세요.")
+        if setting.origin_area_code == "04" and not setting.origin_area_content:
+            errors.append("네이버 원산지를 직접 입력하세요.")
     if channel == "coupang":
         if not setting.outbound_location_code: errors.append("쿠팡 출고지 코드를 입력하세요.")
         if not setting.return_center_code: errors.append("쿠팡 반품지 코드를 입력하세요.")
@@ -75,7 +80,7 @@ def publish_naver(product):
                             "price": max(0, int(row.cost_and_price("naver")["sale_price"]) - price),
                             "sellerManagerCode": row.sku, "usable": True} for row in variants]
     origin = {
-        "statusType": "WAIT", "saleType": "NEW", "leafCategoryId": setting.category_code,
+        "statusType": setting.naver_origin_status, "saleType": "NEW", "leafCategoryId": setting.category_code,
         "name": setting.channel_product_name or product.name, "detailContent": product.detail_page_html,
         "images": {"representativeImage": {"url": image_url}, "optionalImages": []},
         "salePrice": price, "stockQuantity": 999,
@@ -88,11 +93,22 @@ def publish_naver(product):
                                 "optionCombinations": option_combinations,
                                 "useStockManagement": True,
                             },
-                            "productInfoProvidedNotice": setting.notice_data},
+                            "productInfoProvidedNotice": setting.notice_data,
+                            "afterServiceInfo": {
+                                "afterServiceTelephoneNumber": setting.after_service_phone,
+                                "afterServiceGuideContent": setting.after_service_guide,
+                            },
+                            "originAreaInfo": {
+                                "originAreaCode": setting.origin_area_code,
+                                "content": setting.origin_area_content,
+                                "plural": False,
+                            },
+                            "minorPurchasable": setting.minor_purchasable},
         "customerBenefit": {},
     }
     body = {"originProduct": origin, "smartstoreChannelProduct": {"naverShoppingRegistration": True,
-             "channelProductName": setting.channel_product_name or product.name}}
+             "channelProductName": setting.channel_product_name or product.name,
+             "channelProductDisplayStatusType": setting.naver_channel_display_status}}
     _deep_merge(body, setting.extra_attributes or {})
     token = _naver_token()
     return _json_request("https://api.commerce.naver.com/external/v2/products", method="POST",
