@@ -169,7 +169,18 @@ def marketplace_workspace(request):
 def marketplace_workspace_edit(request, pk=None):
     product = get_object_or_404(OpenMarketProduct, pk=pk) if pk else None
     form = OpenMarketWorkspaceForm(request.POST or None, request.FILES or None, instance=product)
-    if request.method == "POST" and form.is_valid():
+    channel_forms = {}
+    if product:
+        existing_settings = {row.channel: row for row in product.channel_settings.all()}
+        for channel in ("naver", "coupang"):
+            setting = existing_settings.get(channel)
+            if setting is None:
+                setting = OpenMarketChannelSetting.objects.create(product=product, channel=channel)
+            channel_forms[channel] = OpenMarketChannelSettingForm(
+                request.POST or None, instance=setting, prefix=f"workspace-{channel}"
+            )
+    channel_forms_valid = all(channel_form.is_valid() for channel_form in channel_forms.values())
+    if request.method == "POST" and form.is_valid() and channel_forms_valid:
         with transaction.atomic():
             product = form.save()
             for channel in product.target_channels:
@@ -183,6 +194,8 @@ def marketplace_workspace_edit(request, pk=None):
                 )
             product.variants.filter(base_variant__in=gold_codes).update(active=product.pricing_material == "gold")
             product.variants.filter(base_variant="S925").update(active=product.pricing_material == "silver")
+            for channel_form in channel_forms.values():
+                channel_form.save()
         messages.success(request, "상품등록 작업실 초안을 저장했습니다.")
         return redirect("erp:marketplace_workspace_edit", pk=product.pk)
     pricing_rows = []
@@ -202,6 +215,7 @@ def marketplace_workspace_edit(request, pk=None):
             }
     return render(request, "erp/marketplace_workspace_edit.html", {
         "form": form, "product": product, "pricing_rows": pricing_rows, "publishing": publishing,
+        "naver_form": channel_forms.get("naver"), "coupang_form": channel_forms.get("coupang"),
     })
 
 

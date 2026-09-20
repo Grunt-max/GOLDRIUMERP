@@ -94,6 +94,33 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertRedirects(response, reverse("erp:marketplace_workspace_edit", args=[product.pk]))
         self.assertFalse(MarketplaceProduct.objects.filter(pk=listing.pk).exists())
 
+    def test_workspace_allows_direct_channel_setting_edits(self):
+        product = OpenMarketProduct.objects.create(code="DIRECT-001", name="직접 입력 상품")
+        response = self.client.get(reverse("erp:marketplace_workspace_edit", args=[product.pk]))
+        self.assertContains(response, "마켓별 등록 정보 입력")
+        self.assertContains(response, 'name="workspace-naver-category_code"', html=False)
+        data = {
+            "code": product.code, "name": product.name, "brand": "골드리움",
+            "origin_country": "대한민국", "pricing_material": "gold", "silver_price_per_gram": "0",
+            "base_labor_cost": "20000", "target_margin_rate": "30", "naver_fee_rate": "6",
+            "coupang_fee_rate": "11", "target_channels": ["naver", "coupang"], "workspace_status": "draft",
+        }
+        for channel in ("naver", "coupang"):
+            prefix = f"workspace-{channel}"
+            data.update({
+                f"{prefix}-category_code": "50004168" if channel == "naver" else "71588",
+                f"{prefix}-channel_product_name": f"{channel} 직접 작성명",
+                f"{prefix}-delivery_method": "DELIVERY", f"{prefix}-delivery_company_code": "CJGLS",
+                f"{prefix}-outbound_location_code": "123", f"{prefix}-return_center_code": "456",
+                f"{prefix}-delivery_fee_type": "FREE", f"{prefix}-delivery_fee": "0",
+                f"{prefix}-return_fee": "3000", f"{prefix}-notice_type": "JEWELLERY",
+                f"{prefix}-notice_data": '{}', f"{prefix}-extra_attributes": '{}',
+            })
+        response = self.client.post(reverse("erp:marketplace_workspace_edit", args=[product.pk]), data)
+        self.assertRedirects(response, reverse("erp:marketplace_workspace_edit", args=[product.pk]))
+        self.assertEqual(product.channel_settings.get(channel="naver").channel_product_name, "naver 직접 작성명")
+        self.assertEqual(product.channel_settings.get(channel="coupang").category_code, "71588")
+
     def test_publish_payload_deep_merge_preserves_generated_fields(self):
         from erp.marketplace_publish import _deep_merge
         payload = {"originProduct": {"name": "ORO", "deliveryInfo": {"deliveryType": "DELIVERY"}}}

@@ -48,13 +48,22 @@ class OpenMarketWorkspaceForm(forms.ModelForm):
 
 
 class OpenMarketChannelSettingForm(forms.ModelForm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for field in self.fields.values():
+            field.widget.attrs["class"] = "field"
+        self.fields["category_code"].help_text = "판매자센터에서 확인한 실제 카테고리 코드를 입력하세요."
+        self.fields["channel_product_name"].help_text = "비워 두면 공통 상품명을 사용합니다."
+        self.fields["notice_data"].help_text = "카테고리에 맞는 상품정보고시 JSON입니다. 등록 전 직접 확인·수정하세요."
+        self.fields["extra_attributes"].help_text = "배송지, 추가 속성 등 채널 API에 더 보낼 JSON입니다. 고급 설정입니다."
+
     class Meta:
         model = OpenMarketChannelSetting
         fields = ("category_code", "channel_product_name", "delivery_method", "delivery_company_code",
                   "outbound_location_code", "return_center_code", "delivery_fee_type", "delivery_fee",
                   "return_fee", "notice_type", "notice_data", "extra_attributes")
-        widgets = {"notice_data": forms.Textarea(attrs={"rows": 5}),
-                   "extra_attributes": forms.Textarea(attrs={"rows": 5})}
+        widgets = {"notice_data": forms.Textarea(attrs={"rows": 8, "spellcheck": "false"}),
+                   "extra_attributes": forms.Textarea(attrs={"rows": 8, "spellcheck": "false"})}
 
 
 class StyledForm(forms.ModelForm):
