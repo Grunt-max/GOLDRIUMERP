@@ -195,7 +195,12 @@ def marketplace_workspace_edit(request, pk=None):
             product.variants.filter(base_variant__in=gold_codes).update(active=product.pricing_material == "gold")
             product.variants.filter(base_variant="S925").update(active=product.pricing_material == "silver")
             for channel_form in channel_forms.values():
-                channel_form.save()
+                setting = channel_form.save(commit=False)
+                if channel_form.has_changed():
+                    setting.last_upload_error = ""
+                    if setting.upload_status == "failed":
+                        setting.upload_status = ""
+                setting.save()
         messages.success(request, "상품등록 작업실 초안을 저장했습니다.")
         return redirect("erp:marketplace_workspace_edit", pk=product.pk)
     pricing_rows = []

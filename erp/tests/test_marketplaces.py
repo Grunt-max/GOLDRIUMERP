@@ -101,6 +101,10 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertContains(response, "상품정보고시 상세")
         self.assertContains(response, "네이버 판매중지 등록")
         self.assertContains(response, 'name="workspace-naver-category_code"', html=False)
+        naver_setting = product.channel_settings.get(channel="naver")
+        naver_setting.upload_status = "failed"
+        naver_setting.last_upload_error = "과거 오류"
+        naver_setting.save(update_fields=["upload_status", "last_upload_error"])
         data = {
             "code": product.code, "name": product.name, "brand": "골드리움",
             "origin_country": "대한민국", "pricing_material": "gold", "silver_price_per_gram": "0",
@@ -128,6 +132,9 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertRedirects(response, reverse("erp:marketplace_workspace_edit", args=[product.pk]))
         self.assertEqual(product.channel_settings.get(channel="naver").channel_product_name, "naver 직접 작성명")
         self.assertEqual(product.channel_settings.get(channel="coupang").category_code, "71588")
+        naver_setting.refresh_from_db()
+        self.assertEqual(naver_setting.upload_status, "")
+        self.assertEqual(naver_setting.last_upload_error, "")
 
     def test_publish_payload_deep_merge_preserves_generated_fields(self):
         from erp.marketplace_publish import _deep_merge
