@@ -325,7 +325,7 @@ def fetch_coupang_settlements(start_date, end_date):
     rows, window_start = [], start_date
     maximum_end = min(end_date, datetime.now(timezone(timedelta(hours=9))).date() - timedelta(days=1))
     while window_start <= maximum_end:
-        window_end = min(window_start + timedelta(days=30), maximum_end)
+        window_end = min(window_start + timedelta(days=29), maximum_end)
         if window_end < window_start:
             break
         token = ""
