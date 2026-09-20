@@ -181,50 +181,60 @@ def _iso_datetime(value):
 
 
 def fetch_naver_orders(start_date, end_date, max_pages=100):
-    """Return normalized Naver product-orders for an inclusive order-date range."""
+    """Return Naver product-orders, splitting the requested range into API-safe days."""
     token = _naver_token()
     path = "/external/v1/pay-order/seller/product-orders"
-    orders = []
-    page = 1
-    while page <= max_pages:
-        query = urlencode({
-            "from": f"{start_date.isoformat()}T00:00:00.000+09:00",
-            "to": f"{end_date.isoformat()}T23:59:59.999+09:00",
-            "rangeType": "PAYED_DATETIME", "page": page, "pageSize": 300,
-        })
-        result = _json_request(
-            f"https://api.commerce.naver.com{path}?{query}",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        data = result.get("data", result) if isinstance(result, dict) else []
-        if isinstance(data, list):
-            rows = data
-        else:
-            rows = data.get("contents") or data.get("content") or data.get("productOrders") or []
-        for row in rows:
-            order = row.get("order", {})
-            product = row.get("productOrder", row)
-            product_order_id = product.get("productOrderId") or row.get("productOrderId")
-            ordered_at = _iso_datetime(order.get("orderDate") or product.get("orderDate"))
-            if not product_order_id or not ordered_at:
-                continue
-            gross = _number(product.get("totalPaymentAmount") or product.get("totalProductAmount"))
-            remain = _number(product.get("remainPaymentAmount", gross))
-            orders.append({
-                "external_order_id": str(order.get("orderId") or product.get("orderId") or product_order_id),
-                "external_product_order_id": str(product_order_id), "ordered_at": ordered_at,
-                "status": str(product.get("claimStatus") or product.get("productOrderStatus") or ""),
-                "product_name": str(product.get("productName") or ""),
-                "option_name": str(product.get("productOption") or ""),
-                "external_product_id": str(product.get("productId") or product.get("channelProductNo") or ""),
-                "quantity": max(1, _number(product.get("quantity"))), "gross_amount": gross,
-                "canceled_amount": max(0, gross - remain),
-                "channel_fee": _number(product.get("paymentCommission")) + _number(product.get("saleCommission")) + _number(product.get("channelCommission")),
-                "expected_settlement_amount": _number(product.get("expectedSettlementAmount")), "raw_data": row,
+    today = datetime.now(timezone(timedelta(hours=9))).date()
+    start_date = max(start_date, today - timedelta(days=179))
+    end_date = min(end_date, today)
+    orders, target_date = [], start_date
+    while target_date <= end_date:
+        page = 1
+        while page <= max_pages:
+            query = urlencode({
+                "from": f"{target_date.isoformat()}T00:00:00.000+09:00",
+                "to": f"{target_date.isoformat()}T23:59:59.999+09:00",
+                "rangeType": "PAYED_DATETIME", "page": page, "pageSize": 300,
             })
-        if len(rows) < 300:
-            break
-        page += 1
+            result = _json_request(
+                f"https://api.commerce.naver.com{path}?{query}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            data = result.get("data", result) if isinstance(result, dict) else []
+            if isinstance(data, list):
+                rows, has_next = data, False
+            else:
+                rows = data.get("contents") or data.get("content") or data.get("productOrders") or []
+                pagination = data.get("pagination") or {}
+                has_next = pagination.get("hasNext", len(rows) >= 300)
+            for row in rows:
+                order = row.get("order", {})
+                product = row.get("productOrder", row)
+                product_order_id = product.get("productOrderId") or row.get("productOrderId")
+                ordered_at = _iso_datetime(order.get("orderDate") or product.get("orderDate"))
+                if not product_order_id or not ordered_at:
+                    continue
+                gross = _number(product.get("totalPaymentAmount") or product.get("totalProductAmount"))
+                remain = _number(product.get("remainPaymentAmount", gross))
+                orders.append({
+                    "external_order_id": str(order.get("orderId") or product.get("orderId") or product_order_id),
+                    "external_product_order_id": str(product_order_id), "ordered_at": ordered_at,
+                    "status": str(product.get("claimStatus") or product.get("productOrderStatus") or ""),
+                    "product_name": str(product.get("productName") or ""),
+                    "option_name": str(product.get("productOption") or ""),
+                    "external_product_id": str(product.get("productId") or product.get("channelProductNo") or ""),
+                    "quantity": max(1, _number(product.get("quantity"))), "gross_amount": gross,
+                    "canceled_amount": max(0, gross - remain),
+                    "channel_fee": _number(product.get("paymentCommission")) + _number(product.get("saleCommission")) + _number(product.get("channelCommission")),
+                    "expected_settlement_amount": _number(product.get("expectedSettlementAmount")), "raw_data": row,
+                })
+            if not has_next:
+                break
+            page += 1
+            time.sleep(0.55)
+        target_date += timedelta(days=1)
+        if target_date <= end_date:
+            time.sleep(0.55)
     return orders
 
 

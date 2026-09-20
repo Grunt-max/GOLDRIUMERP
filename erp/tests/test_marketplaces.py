@@ -1,6 +1,6 @@
 import os
 from decimal import Decimal
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from urllib.parse import parse_qs
 from unittest.mock import patch
 
@@ -53,6 +53,18 @@ class MarketplaceReadOnlyTests(TestCase):
         self.client.post(url, {"start": "2026-09-01", "end": "2026-09-30"})
         self.assertEqual(MarketplaceOrder.objects.count(), 1)
         self.assertEqual(MarketplaceOrder.objects.get().net_amount, Decimal("0"))
+
+    @patch("erp.marketplaces.time.sleep")
+    @patch("erp.marketplaces._json_request")
+    @patch("erp.marketplaces._naver_token", return_value="token")
+    def test_naver_order_range_is_split_into_api_safe_days(self, token, json_request, sleep):
+        from erp.marketplaces import fetch_naver_orders
+
+        json_request.return_value = {"data": {"contents": [], "pagination": {"hasNext": False}}}
+        fetch_naver_orders(date(2026, 9, 18), date(2026, 9, 20))
+        self.assertEqual(json_request.call_count, 3)
+        self.assertIn("from=2026-09-18T00%3A00%3A00.000%2B09%3A00", json_request.call_args_list[0].args[0])
+        self.assertIn("to=2026-09-20T23%3A59%3A59.999%2B09%3A00", json_request.call_args_list[2].args[0])
 
     def test_marketplace_snapshot_can_create_or_link_erp_master(self):
         snapshot = MarketplaceProduct.objects.create(
