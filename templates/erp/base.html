@@ -11,6 +11,7 @@
   {% if 'purchases' in erp_allowed_sections %}<a class="{% if request.resolver_match.url_name == 'purchase_list' %}active{% endif %}" href="{% url 'erp:purchase_list' %}"><i>◇</i> 매입관리(타 공장)</a>{% endif %}
   {% if 'sales' in erp_allowed_sections %}<a class="{% if request.resolver_match.url_name == 'sales_list' %}active{% endif %}" href="{% url 'erp:sales_list' %}"><i>▤</i> 판매관리</a>
   <a class="sub-item {% if request.resolver_match.url_name == 'monthly_customer_sales' %}active{% endif %}" href="{% url 'erp:monthly_customer_sales' %}">› 월별 매출현황</a>
+  <a class="sub-item {% if request.resolver_match.url_name == 'tax_invoice_sales' %}active{% endif %}" href="{% url 'erp:tax_invoice_sales' %}">› 세금계산서</a>
   <a class="sub-item {% if request.resolver_match.url_name == 'receivables_list' or request.resolver_match.url_name == 'customer_ledger' %}active{% endif %}" href="{% url 'erp:receivables_list' %}">› 미수현황</a>{% endif %}
   {% if 'customers' in erp_allowed_sections %}<a class="{% if request.resolver_match.url_name == 'customer_list' %}active{% endif %}" href="{% url 'erp:customer_list' %}"><i>♙</i> 거래처관리</a>{% endif %}
   {% if 'products' in erp_allowed_sections %}<a class="{% if request.resolver_match.url_name == 'product_list' %}active{% endif %}" href="{% url 'erp:product_list' %}"><i>▧</i> 상품·카탈로그</a>{% endif %}

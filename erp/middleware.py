@@ -13,7 +13,7 @@ ROUTE_SECTIONS = {
     "daily_activity_list": "activities", "daily_activity_create": "activities", "daily_activity_delete": "activities",
     "gold_ledger_list": "gold_ledger", "gold_ledger_create": "gold_ledger", "gold_ledger_delete": "gold_ledger",
     "purchase_list": "purchases", "purchase_create": "purchases", "purchase_supplier_create": "purchases", "purchase_delete": "purchases",
-    "sales_list": "sales", "monthly_customer_sales": "sales", "sale_create": "sales",
+    "sales_list": "sales", "monthly_customer_sales": "sales", "tax_invoice_sales": "sales", "sale_create": "sales",
     "sale_transaction_detail": "sales", "receivables_list": "sales", "customer_ledger": "sales",
     "customer_sales_summary": "sales", "customer_sales_history": "sales", "sales_merge": "sales",
     "sales_split": "sales", "sales_return": "sales", "sales_soft_delete": "sales",

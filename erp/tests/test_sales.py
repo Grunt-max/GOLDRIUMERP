@@ -678,7 +678,9 @@ class SaleStructureTests(TestCase):
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.settlement_type, "cash")
 
-        account_customer = Customer.objects.create(name="계좌 전용 거래처", customer_type="sales")
+        account_customer = Customer.objects.create(
+            name="계좌 전용 거래처", customer_type="sales", settlement_type="account",
+        )
         filtered = self.client.get(reverse("erp:customer_list"), {"settlement_type": "cash"}, secure=True)
         self.assertContains(filtered, cash_customer.name)
         self.assertContains(filtered, self.customer.name)
@@ -957,6 +959,51 @@ class SaleStructureTests(TestCase):
         self.assertContains(home, "미수공임")
 
     @patch("erp.views.timezone.localdate", return_value=date(2026, 8, 22))
+    def test_tax_invoice_sales_only_include_account_customers_and_monthly_split(self, _mock_localdate):
+        account_customer = Customer.objects.create(
+            name="JDL", customer_type="sales", settlement_type="account",
+        )
+        cash_customer = Customer.objects.create(
+            name="일반 현금처", customer_type="sales", settlement_type="cash",
+        )
+        account_sale = SaleTransaction.objects.create(
+            customer=account_customer, sale_date=date(2026, 8, 10),
+        )
+        SaleItem.objects.create(
+            transaction=account_sale, entry_type="sale", model_number="ACCOUNT-SALE",
+            material=self.material_24, weight=Decimal("10"), quantity=1,
+            loss_rate=0, unit_price=10000,
+        )
+        cash_sale = SaleTransaction.objects.create(
+            customer=cash_customer, sale_date=date(2026, 8, 11),
+        )
+        SaleItem.objects.create(
+            transaction=cash_sale, entry_type="sale", model_number="CASH-SALE",
+            material=self.material_24, weight=Decimal("5"), quantity=1,
+            loss_rate=0, unit_price=5000,
+        )
+
+        metrics = monthly_sales_metrics(2026, 8)
+        self.assertEqual(metrics["total_gold"], Decimal("15.000"))
+        self.assertEqual(metrics["account_total_gold"], Decimal("10.000"))
+        self.assertEqual(metrics["account_labor"], Decimal("10000"))
+        self.assertEqual(metrics["cash_total_gold"], Decimal("5.000"))
+        self.assertEqual(metrics["cash_labor"], Decimal("5000"))
+
+        page = self.client.get(reverse("erp:tax_invoice_sales"), {"month": "2026-08"})
+        self.assertContains(page, "2026년 08월 세금계산서 대상 매출")
+        self.assertContains(page, account_customer.name)
+        self.assertContains(page, "발행 필요")
+        self.assertNotContains(page, cash_customer.name)
+        self.assertEqual(page.context["totals"]["total_gold"], Decimal("10.000"))
+        self.assertEqual(page.context["totals"]["labor"], Decimal("10000"))
+
+        home = self.client.get(reverse("erp:dashboard"))
+        self.assertContains(home, "8월 계좌 거래처 매출")
+        self.assertContains(home, "8월 현금 거래처 매출")
+        self.assertContains(home, reverse("erp:tax_invoice_sales"))
+
+    @patch("erp.views.timezone.localdate", return_value=date(2026, 8, 22))
     def test_monthly_gold_metrics_and_daily_activity_calendar(self, _mock_localdate):
         GoldPrice.objects.create(
             market_type="wholesale", price_date=timezone.localdate(),
@@ -982,8 +1029,10 @@ class SaleStructureTests(TestCase):
         self.assertContains(home, "(87,750원)")
         self.assertContains(home, "현재 도매 시세 기준 환산액")
         self.assertContains(home, "8월 전체 순금 매출")
-        self.assertContains(home, reverse("erp:monthly_customer_sales"), count=4)
-        self.assertContains(home, "dashboard-arrow", count=4)
+        self.assertContains(home, reverse("erp:monthly_customer_sales"), count=5)
+        self.assertContains(home, "dashboard-arrow", count=6)
+        self.assertEqual(home.context["month_metrics"]["cash_total_gold"], Decimal("18.428"))
+        self.assertEqual(home.context["month_metrics"]["cash_labor"], Decimal("10000"))
         monthly_page = self.client.get(reverse("erp:monthly_customer_sales"))
         self.assertContains(monthly_page, "2026년 08월 ~ 2026년 08월 거래처별 매출")
         self.assertEqual(monthly_page.context["period_end"], timezone.localdate())

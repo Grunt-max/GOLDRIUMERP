@@ -35,6 +35,7 @@ urlpatterns = [
     path("orders/<int:pk>/complete/", views.order_complete, name="order_complete"),
     path("sales/", views.sales_list, name="sales_list"),
     path("sales/monthly-customers/", views.monthly_customer_sales, name="monthly_customer_sales"),
+    path("sales/tax-invoices/", views.tax_invoice_sales, name="tax_invoice_sales"),
     path("sales/new/", views.sale_create, name="sale_create"),
     path("sales/transactions/<int:pk>/", views.sale_transaction_detail, name="sale_transaction_detail"),
     path("sales/receivables/", views.receivables_list, name="receivables_list"),

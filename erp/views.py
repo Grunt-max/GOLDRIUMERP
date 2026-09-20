@@ -535,18 +535,29 @@ def monthly_sales_metrics(year, month):
         transaction__sale_date__gte=start, transaction__sale_date__lt=end,
         transaction__status__in=("new", "done"), is_deleted=False,
         entry_type__in=("sale", "return"),
-    ).select_related("material")
+    ).select_related("material", "transaction__customer")
     base_gold = Decimal("0")
     loss_gold = Decimal("0")
     labor = Decimal("0")
+    settlement_totals = {
+        "account": {"total_gold": Decimal("0"), "labor": Decimal("0")},
+        "cash": {"total_gold": Decimal("0"), "labor": Decimal("0")},
+    }
     for item in items:
         sign = Decimal("-1") if item.entry_type == "return" else Decimal("1")
         is_gold = bool(item.material and item.material.is_gold_material)
         base = item.total_weight * item.material.purity_rate if is_gold else Decimal("0")
-        base_gold += sign * base
+        signed_base = sign * base
+        signed_loss = Decimal("0")
+        base_gold += signed_base
         if item.material and item.material.uses_loss_rate:
-            loss_gold += sign * (base * item.loss_rate / Decimal("100"))
-        labor += sign * item.total_amount
+            signed_loss = sign * (base * item.loss_rate / Decimal("100"))
+            loss_gold += signed_loss
+        signed_labor = sign * item.total_amount
+        labor += signed_labor
+        settlement = item.transaction.customer.settlement_type
+        settlement_totals[settlement]["total_gold"] += signed_base + signed_loss
+        settlement_totals[settlement]["labor"] += signed_labor
     purchase_base = Decimal("0")
     purchase_loss = Decimal("0")
     purchase_labor = Decimal("0")
@@ -567,7 +578,67 @@ def monthly_sales_metrics(year, month):
         "margin_base_gold": (base_gold - purchase_base).quantize(Decimal("0.001")),
         "margin_loss_gold": (loss_gold - purchase_loss).quantize(Decimal("0.0001")),
         "margin_labor": labor - purchase_labor,
+        "account_total_gold": settlement_totals["account"]["total_gold"].quantize(Decimal("0.001")),
+        "account_labor": settlement_totals["account"]["labor"],
+        "cash_total_gold": settlement_totals["cash"]["total_gold"].quantize(Decimal("0.001")),
+        "cash_labor": settlement_totals["cash"]["labor"],
     }
+
+
+def tax_invoice_sales(request):
+    today = timezone.localdate()
+    current_month = today.replace(day=1)
+    try:
+        selected_month = date.fromisoformat(f"{request.GET.get('month', '')}-01")
+    except (TypeError, ValueError):
+        selected_month = current_month
+    selected_month = min(selected_month, current_month)
+    start, end = month_bounds(selected_month.year, selected_month.month)
+    if selected_month == current_month:
+        end = today + timedelta(days=1)
+
+    rows = {}
+    items = SaleItem.objects.filter(
+        transaction__sale_date__gte=start, transaction__sale_date__lt=end,
+        transaction__status__in=("new", "done"),
+        transaction__customer__settlement_type="account",
+        is_deleted=False, entry_type__in=("sale", "return"),
+    ).select_related("transaction__customer", "material")
+    for item in items:
+        row = rows.setdefault(item.transaction.customer_id, {
+            "customer": item.transaction.customer,
+            "base_gold": Decimal("0"), "loss_gold": Decimal("0"),
+            "total_gold": Decimal("0"), "labor": Decimal("0"),
+        })
+        sign = Decimal("-1") if item.entry_type == "return" else Decimal("1")
+        is_gold = bool(item.material and item.material.is_gold_material)
+        base = item.total_weight * item.material.purity_rate if is_gold else Decimal("0")
+        loss = base * item.loss_rate / Decimal("100") if item.material and item.material.uses_loss_rate else Decimal("0")
+        row["base_gold"] += sign * base
+        row["loss_gold"] += sign * loss
+        row["total_gold"] += sign * (base + loss)
+        row["labor"] += sign * item.total_amount
+
+    account_customers = Customer.objects.filter(
+        customer_type="sales", settlement_type="account",
+    ).order_by("name")
+    customer_rows = []
+    for customer in account_customers:
+        customer_rows.append(rows.get(customer.pk, {
+            "customer": customer, "base_gold": Decimal("0"),
+            "loss_gold": Decimal("0"), "total_gold": Decimal("0"),
+            "labor": Decimal("0"),
+        }))
+    totals = {
+        key: sum((row[key] for row in customer_rows), Decimal("0"))
+        for key in ("base_gold", "loss_gold", "total_gold", "labor")
+    }
+    return render(request, "erp/tax_invoice_sales.html", {
+        "rows": customer_rows, "totals": totals,
+        "selected_month": selected_month, "selected_month_text": f"{selected_month:%Y-%m}",
+        "current_month_text": f"{current_month:%Y-%m}",
+        "period_start": start, "period_end": end - timedelta(days=1),
+    })
 
 
 def monthly_customer_sales(request):

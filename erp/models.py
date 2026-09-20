@@ -39,7 +39,7 @@ class Customer(models.Model):
     name = models.CharField("거래처명", max_length=100)
     customer_type = models.CharField("구분", max_length=10, choices=TYPE_CHOICES, default="sales")
     settlement_type = models.CharField(
-        "정산 구분", max_length=10, choices=SETTLEMENT_TYPE_CHOICES, default="account",
+        "정산 구분", max_length=10, choices=SETTLEMENT_TYPE_CHOICES, default="cash",
     )
     contact = models.CharField("담당자", max_length=50, blank=True)
     phone = models.CharField("연락처", max_length=30, blank=True)
