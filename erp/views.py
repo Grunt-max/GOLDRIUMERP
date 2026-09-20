@@ -694,16 +694,34 @@ def monthly_customer_sales(request):
         key: sum((row[key] for row in customer_rows), Decimal("0"))
         for key in ("base_gold", "loss_gold", "total_gold", "labor", "quantity")
     }
+    settlement_totals = {
+        settlement_type: {
+            key: sum(
+                (row[key] for row in customer_rows if row["customer"].settlement_type == settlement_type),
+                Decimal("0"),
+            )
+            for key in ("base_gold", "loss_gold", "total_gold", "labor", "quantity")
+        }
+        for settlement_type in ("account", "cash")
+    }
     latest_wholesale = GoldPrice.objects.filter(market_type="wholesale").first()
     wholesale_per_gram = latest_wholesale.applied_price_per_gram if latest_wholesale else None
     if wholesale_per_gram is not None:
         for row in customer_rows:
             row["loss_value"] = (row["loss_gold"] * wholesale_per_gram).quantize(Decimal("1"))
         totals["loss_value"] = (totals["loss_gold"] * wholesale_per_gram).quantize(Decimal("1"))
+        for settlement_total in settlement_totals.values():
+            settlement_total["loss_value"] = (
+                settlement_total["loss_gold"] * wholesale_per_gram
+            ).quantize(Decimal("1"))
     else:
         totals["loss_value"] = None
+        for settlement_total in settlement_totals.values():
+            settlement_total["loss_value"] = None
     return render(request, "erp/monthly_customer_sales.html", {
         "rows": customer_rows, "totals": totals,
+        "account_totals": settlement_totals["account"],
+        "cash_totals": settlement_totals["cash"],
         "start_month": start_month, "end_month": end_month,
         "start_month_text": f"{start_month:%Y-%m}", "end_month_text": f"{end_month:%Y-%m}",
         "current_month_text": f"{current_month:%Y-%m}",

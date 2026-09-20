@@ -998,6 +998,14 @@ class SaleStructureTests(TestCase):
         self.assertEqual(page.context["totals"]["total_gold"], Decimal("10.000"))
         self.assertEqual(page.context["totals"]["labor"], Decimal("10000"))
 
+        monthly_page = self.client.get(reverse("erp:monthly_customer_sales"), {"month": "2026-08"})
+        self.assertContains(monthly_page, "계좌 거래처 합계")
+        self.assertContains(monthly_page, "현금 거래처 합계")
+        self.assertEqual(monthly_page.context["account_totals"]["total_gold"], Decimal("10.000"))
+        self.assertEqual(monthly_page.context["account_totals"]["labor"], Decimal("10000"))
+        self.assertEqual(monthly_page.context["cash_totals"]["total_gold"], Decimal("5.000"))
+        self.assertEqual(monthly_page.context["cash_totals"]["labor"], Decimal("5000"))
+
         home = self.client.get(reverse("erp:dashboard"))
         self.assertContains(home, "8월 계좌 거래처 매출")
         self.assertContains(home, "8월 현금 거래처 매출")
