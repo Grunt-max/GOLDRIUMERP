@@ -35,8 +35,12 @@ def generate_order_no(ordered_at=None):
 
 class Customer(models.Model):
     TYPE_CHOICES = [("sales", "판매처"), ("purchase", "매입처")]
+    SETTLEMENT_TYPE_CHOICES = [("account", "계좌 거래처"), ("cash", "현금 거래처")]
     name = models.CharField("거래처명", max_length=100)
     customer_type = models.CharField("구분", max_length=10, choices=TYPE_CHOICES, default="sales")
+    settlement_type = models.CharField(
+        "정산 구분", max_length=10, choices=SETTLEMENT_TYPE_CHOICES, default="account",
+    )
     contact = models.CharField("담당자", max_length=50, blank=True)
     phone = models.CharField("연락처", max_length=30, blank=True)
     memo = models.TextField("메모", blank=True)

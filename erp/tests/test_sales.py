@@ -346,7 +346,10 @@ class SaleStructureTests(TestCase):
         summary = self.client.get(reverse("erp:customer_sales_summary", args=[self.customer.pk])).json()
         self.assertEqual(summary["gold_receivable"], "-0.898")
         self.assertEqual(summary["labor_receivable"], "700")
-        ledger = self.client.get(reverse("erp:customer_ledger", args=[self.customer.pk]))
+        ledger = self.client.get(reverse("erp:customer_ledger", args=[self.customer.pk]), {
+            "start_date": sale.sale_date.isoformat(),
+            "end_date": sale.sale_date.isoformat(),
+        })
         self.assertContains(ledger, "RET-001")
         self.assertContains(ledger, "반품")
 
@@ -610,6 +613,7 @@ class SaleStructureTests(TestCase):
         response = self.client.post(reverse("erp:customer_edit", args=[self.customer.pk]), {
             "name": self.customer.name,
             "customer_type": "sales",
+            "settlement_type": "account",
             "contact": "",
             "phone": "",
             "default_loss_rate": "7.25",
@@ -625,6 +629,7 @@ class SaleStructureTests(TestCase):
         form = CustomerForm(data={
             "name": f"  {self.customer.name}  ",
             "customer_type": "sales",
+            "settlement_type": "account",
             "contact": "",
             "phone": "",
             "default_loss_rate": "",
@@ -641,6 +646,7 @@ class SaleStructureTests(TestCase):
         form = CustomerForm(data={
             "name": f" {self.customer.name} ",
             "customer_type": "sales",
+            "settlement_type": "account",
             "contact": "수정 담당자",
             "phone": "",
             "default_loss_rate": "",
@@ -650,6 +656,37 @@ class SaleStructureTests(TestCase):
         self.assertTrue(form.is_valid(), form.errors)
         updated = form.save()
         self.assertEqual(updated.name, self.customer.name)
+
+    def test_customer_settlement_type_can_be_changed_and_filtered(self):
+        cash_customer = Customer.objects.create(
+            name="현금 전용 거래처", customer_type="sales", settlement_type="cash",
+        )
+
+        edit_response = self.client.post(reverse("erp:customer_edit", args=[self.customer.pk]), {
+            "name": self.customer.name,
+            "customer_type": "sales",
+            "settlement_type": "cash",
+            "contact": "",
+            "phone": "",
+            "default_loss_rate": "",
+            "supplier_name_override": "",
+            "memo": "",
+        }, secure=True)
+        self.assertRedirects(
+            edit_response, reverse("erp:customer_list"), fetch_redirect_response=False,
+        )
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.settlement_type, "cash")
+
+        account_customer = Customer.objects.create(name="계좌 전용 거래처", customer_type="sales")
+        filtered = self.client.get(reverse("erp:customer_list"), {"settlement_type": "cash"}, secure=True)
+        self.assertContains(filtered, cash_customer.name)
+        self.assertContains(filtered, self.customer.name)
+        self.assertNotContains(filtered, account_customer.name)
+
+        lookup = self.client.get(reverse("erp:customer_lookup"), {"settlement_type": "cash"}, secure=True)
+        self.assertContains(lookup, "현금 거래처")
+        self.assertNotContains(lookup, account_customer.name)
 
     def test_sale_create_can_preselect_customer_from_receivables(self):
         outstanding = SaleTransaction.objects.create(customer=self.customer)

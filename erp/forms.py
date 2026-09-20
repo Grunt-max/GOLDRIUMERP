@@ -245,7 +245,7 @@ class CustomerForm(StyledForm):
 
     class Meta:
         model = Customer
-        fields = ["name", "customer_type", "contact", "phone", "default_loss_rate", "supplier_name_override", "receivable_accounts_enabled", "memo"]
+        fields = ["name", "customer_type", "settlement_type", "contact", "phone", "default_loss_rate", "supplier_name_override", "receivable_accounts_enabled", "memo"]
         widgets = {
             "default_loss_rate": forms.NumberInput(attrs={"min": "0", "step": "0.01", "placeholder": "미설정 시 재질 기본값 적용"}),
             "supplier_name_override": forms.TextInput(attrs={"placeholder": "비워두면 기초관리의 기본 공급자명 사용"}),

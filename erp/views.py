@@ -1383,7 +1383,7 @@ def sale_create(request):
         "header_form": header_form, "line_formset": line_formset,
         "submission_failed": request.method == "POST",
         "product_defaults": product_defaults, "material_defaults": material_defaults,
-        "customer_defaults": list(Customer.objects.filter(customer_type="sales").values("id", "name")),
+        "customer_defaults": list(Customer.objects.filter(customer_type="sales").values("id", "name", "settlement_type")),
         "receivable_accounts": list(ReceivableAccount.objects.filter(
             active=True, customer__receivable_accounts_enabled=True,
         ).values("id", "customer_id", "name")),
@@ -2025,23 +2025,33 @@ def sales_split(request):
 
 def customer_list(request):
     query = request.GET.get("q", "").strip()
+    settlement_type = request.GET.get("settlement_type", "").strip()
     customers = Customer.objects.all()
     if query:
         customers = customers.filter(name__icontains=query)
-    return render(request, "erp/customer_list.html", {"customers": customers, "query": query, "create_form": CustomerForm()})
+    if settlement_type in dict(Customer.SETTLEMENT_TYPE_CHOICES):
+        customers = customers.filter(settlement_type=settlement_type)
+    return render(request, "erp/customer_list.html", {
+        "customers": customers, "query": query, "settlement_type": settlement_type,
+        "create_form": CustomerForm(),
+    })
 
 
 def customer_lookup(request):
     query = request.GET.get("q", "").strip()
     target = request.GET.get("target", "sale")
+    settlement_type = request.GET.get("settlement_type", "").strip()
     customers = Customer.objects.filter(customer_type="sales")
     if query:
         customers = customers.filter(
             Q(name__icontains=query) | Q(contact__icontains=query) |
             Q(phone__icontains=query) | Q(aliases__alias__icontains=query)
         ).distinct()
+    if settlement_type in dict(Customer.SETTLEMENT_TYPE_CHOICES):
+        customers = customers.filter(settlement_type=settlement_type)
     return render(request, "erp/customer_lookup.html", {
         "customers": customers[:100], "query": query, "target": target,
+        "settlement_type": settlement_type,
     })
 
 

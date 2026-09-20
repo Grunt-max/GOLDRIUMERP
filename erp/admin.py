@@ -19,7 +19,8 @@ class CompanyProfileAdmin(admin.ModelAdmin):
 
 @admin.register(Customer)
 class CustomerAdmin(admin.ModelAdmin):
-    list_display = ("name", "customer_type", "contact", "phone", "default_loss_rate", "created_at")
+    list_display = ("name", "customer_type", "settlement_type", "contact", "phone", "default_loss_rate", "created_at")
+    list_filter = ("customer_type", "settlement_type")
     search_fields = ("name", "contact", "phone")
 
 
