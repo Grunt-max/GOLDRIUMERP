@@ -74,6 +74,26 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertEqual(product.channel_settings.get(channel="naver").channel_product_name, "네이버용 목걸이")
         self.assertEqual(product.channel_settings.get(channel="coupang").channel_product_name, "쿠팡용 목걸이")
 
+    def test_workspace_internal_preview_never_calls_external_publish_api(self):
+        product = OpenMarketProduct.objects.create(
+            code="TEST-SILVER", name="테스트 실버", workspace_status="approved",
+            target_channels=["naver", "coupang"], pricing_material="silver",
+            default_weight=Decimal("10"), silver_price_per_gram=Decimal("1500"), base_labor_cost=20000,
+        )
+        OpenMarketVariant.objects.create(product=product, sku="TEST-SILVER-S925", base_variant="S925")
+        with patch("erp.views.publish_naver") as publish_naver, patch("erp.views.publish_coupang") as publish_coupang:
+            response = self.client.post(reverse("erp:marketplace_workspace_simulate", args=[product.pk, "naver"]))
+        self.assertRedirects(response, reverse("erp:marketplace_channel_items", args=["naver"]))
+        publish_naver.assert_not_called()
+        publish_coupang.assert_not_called()
+        listing = MarketplaceProduct.objects.get(channel="naver", external_product_id="TEST-TEST-SILVER-naver")
+        self.assertEqual(listing.status, "TEST_PREVIEW")
+        self.assertTrue(listing.raw_data["testPreview"])
+        self.assertEqual(listing.normalized_offers.count(), 1)
+        response = self.client.post(reverse("erp:marketplace_workspace_simulate", args=[product.pk, "naver"]), {"action": "clear"})
+        self.assertRedirects(response, reverse("erp:marketplace_workspace_edit", args=[product.pk]))
+        self.assertFalse(MarketplaceProduct.objects.filter(pk=listing.pk).exists())
+
     def test_channel_sales_aggregates_order_based_net_sales(self):
         MarketplaceSettlement.objects.create(
             channel="coupang", external_key="NP-1", external_order_id="N-1",

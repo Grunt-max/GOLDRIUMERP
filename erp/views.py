@@ -194,7 +194,12 @@ def marketplace_workspace_edit(request, pk=None):
     if product:
         settings = {row.channel: row for row in product.channel_settings.all()}
         for channel in ("naver", "coupang"):
-            publishing[channel] = {"errors": publish_readiness(product, channel), "setting": settings.get(channel)}
+            publishing[channel] = {
+                "errors": publish_readiness(product, channel), "setting": settings.get(channel),
+                "test_listing": MarketplaceProduct.objects.filter(
+                    channel=channel, external_product_id=f"TEST-{product.code}-{channel}"
+                ).first(),
+            }
     return render(request, "erp/marketplace_workspace_edit.html", {
         "form": form, "product": product, "pricing_rows": pricing_rows, "publishing": publishing,
     })
@@ -257,6 +262,58 @@ def marketplace_workspace_publish(request, pk, channel):
         product.save(update_fields=["workspace_status", "updated_at"])
     messages.success(request, f"{setting.get_channel_display()}에 상품을 등록했습니다. 상품번호: {external_id}")
     return redirect("erp:marketplace_workspace_edit", pk=pk)
+
+
+@require_POST
+@master_reauthentication_required
+def marketplace_workspace_simulate(request, pk, channel):
+    if channel not in {"naver", "coupang"}:
+        return HttpResponseBadRequest("지원하지 않는 채널입니다.")
+    product = get_object_or_404(OpenMarketProduct.objects.prefetch_related("variants", "channel_settings"), pk=pk)
+    external_id = f"TEST-{product.code}-{channel}"
+    if request.POST.get("action") == "clear":
+        MarketplaceProduct.objects.filter(channel=channel, external_product_id=external_id).delete()
+        messages.success(request, f"{channel} 내부 테스트 등록을 삭제했습니다.")
+        return redirect("erp:marketplace_workspace_edit", pk=pk)
+    errors = []
+    if product.workspace_status != "approved": errors.append("작업 상태를 승인 완료로 변경하세요.")
+    if channel not in product.target_channels: errors.append("등록 대상 채널에 추가하세요.")
+    variants = list(product.variants.filter(active=True))
+    price_rows = [(row, row.cost_and_price(channel)["sale_price"]) for row in variants]
+    if not variants or any(price is None for _row, price in price_rows): errors.append("옵션 중량과 가격 기준을 입력하세요.")
+    if errors:
+        messages.error(request, "테스트 등록 전 확인: " + " ".join(errors))
+        return redirect("erp:marketplace_workspace_edit", pk=pk)
+    setting, _ = OpenMarketChannelSetting.objects.get_or_create(product=product, channel=channel)
+    base_price = min(price for _row, price in price_rows)
+    if channel == "naver":
+        raw_data = {"testPreview": True, "originProduct": {
+            "name": setting.channel_product_name or product.name, "salePrice": int(base_price),
+            "detailContent": product.detail_page_html,
+            "detailAttribute": {"optionInfo": {"optionCombinations": [
+                {"id": row.sku, "optionName1": row.get_base_variant_display(),
+                 "price": int(price - base_price), "usable": True} for row, price in price_rows
+            ]}},
+        }, "searchProduct": {"channelProducts": [{"discountedPrice": int(base_price)}]}}
+    else:
+        raw_data = {"testPreview": True, "sellerProductName": setting.channel_product_name or product.name,
+                    "items": [{"vendorItemId": row.sku, "vendorItemName": row.get_base_variant_display(),
+                               "salePrice": int(price)} for row, price in price_rows]}
+    listing, _ = MarketplaceProduct.objects.update_or_create(
+        channel=channel, external_product_id=external_id,
+        defaults={"name": setting.channel_product_name or product.name, "status": "TEST_PREVIEW",
+                  "category_code": setting.category_code, "image_url": request.build_absolute_uri(product.image.url) if product.image else "",
+                  "sale_price": base_price, "option_count": len(variants), "master_product": product, "raw_data": raw_data},
+    )
+    listing.normalized_offers.all().delete()
+    OpenMarketChannelOffer.objects.bulk_create([
+        OpenMarketChannelOffer(listing=listing, external_option_id=row.sku,
+                               option_name=row.get_base_variant_display(), sale_price=price,
+                               display_price=price, sale_status="TEST_PREVIEW")
+        for row, price in price_rows
+    ])
+    messages.success(request, f"{listing.get_channel_display()} 내부 테스트 등록을 만들었습니다. 외부 채널에는 전송되지 않았습니다.")
+    return redirect("erp:marketplace_channel_items", channel=channel)
 
 
 @transaction.atomic
