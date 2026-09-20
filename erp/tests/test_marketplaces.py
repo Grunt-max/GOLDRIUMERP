@@ -98,6 +98,8 @@ class MarketplaceReadOnlyTests(TestCase):
         product = OpenMarketProduct.objects.create(code="DIRECT-001", name="직접 입력 상품")
         response = self.client.get(reverse("erp:marketplace_workspace_edit", args=[product.pk]))
         self.assertContains(response, "마켓별 등록 정보 입력")
+        self.assertContains(response, "상품정보고시 상세")
+        self.assertContains(response, "네이버 판매중지 등록")
         self.assertContains(response, 'name="workspace-naver-category_code"', html=False)
         data = {
             "code": product.code, "name": product.name, "brand": "골드리움",
