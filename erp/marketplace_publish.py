@@ -15,6 +15,15 @@ def _price(product, channel):
     return min(prices) if prices else None
 
 
+def _deep_merge(target, overrides):
+    for key, value in (overrides or {}).items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            _deep_merge(target[key], value)
+        else:
+            target[key] = value
+    return target
+
+
 def publish_readiness(product, channel):
     errors = []
     setting = product.channel_settings.filter(channel=channel).first()
@@ -73,13 +82,18 @@ def publish_naver(product):
         "deliveryInfo": {"deliveryType": "DELIVERY", "deliveryAttributeType": "NORMAL",
                          "deliveryFee": {"deliveryFeeType": setting.delivery_fee_type, "baseFee": int(setting.delivery_fee)},
                          "claimDeliveryInfo": {"returnDeliveryFee": int(setting.return_fee), "exchangeDeliveryFee": int(setting.return_fee) * 2}},
-        "detailAttribute": {"optionInfo": {"optionSimple": option_combinations},
+        "detailAttribute": {"optionInfo": {
+                                "optionCombinationSortType": "CREATE",
+                                "optionCombinationGroupNames": {"optionGroupName1": "함량 및 색상"},
+                                "optionCombinations": option_combinations,
+                                "useStockManagement": True,
+                            },
                             "productInfoProvidedNotice": setting.notice_data},
         "customerBenefit": {},
     }
     body = {"originProduct": origin, "smartstoreChannelProduct": {"naverShoppingRegistration": True,
              "channelProductName": setting.channel_product_name or product.name}}
-    body.update(setting.extra_attributes or {})
+    _deep_merge(body, setting.extra_attributes or {})
     token = _naver_token()
     return _json_request("https://api.commerce.naver.com/external/v2/products", method="POST",
                          headers={"Authorization": f"Bearer {token}"}, body=body)
@@ -100,7 +114,9 @@ def publish_coupang(product, image_url):
             "externalVendorSku": row.sku,
             "images": [{"imageOrder": 0, "imageType": "REPRESENTATION", "vendorPath": image_url}],
             "notices": setting.notice_data.get("notices", []),
-            "attributes": [{"attributeTypeName": "종류", "attributeValueName": row.get_base_variant_display()}],
+            "attributes": setting.notice_data.get("attributes") or [
+                {"attributeTypeName": "함량 및 색상", "attributeValueName": row.get_base_variant_display(), "exposed": "EXPOSED"}
+            ],
             "contents": [{"contentsType": "HTML", "contentDetails": [{"content": product.detail_page_html, "detailType": "TEXT"}]}],
             "offerCondition": "NEW",
         })
@@ -115,7 +131,7 @@ def publish_coupang(product, image_url):
         "returnCenterCode": setting.return_center_code, "outboundShippingPlaceCode": int(setting.outbound_location_code),
         "vendorUserId": vendor_id, "requested": False, "items": items, "manufacture": product.manufacturer or product.brand,
     }
-    body.update(setting.extra_attributes or {})
+    _deep_merge(body, setting.extra_attributes or {})
     path = "/v2/providers/seller_api/apis/api/v1/marketplace/seller-products"
     return _json_request(f"https://api-gateway.coupang.com{path}", method="POST",
                          headers=_coupang_headers("POST", path), body=body)

@@ -94,6 +94,14 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertRedirects(response, reverse("erp:marketplace_workspace_edit", args=[product.pk]))
         self.assertFalse(MarketplaceProduct.objects.filter(pk=listing.pk).exists())
 
+    def test_publish_payload_deep_merge_preserves_generated_fields(self):
+        from erp.marketplace_publish import _deep_merge
+        payload = {"originProduct": {"name": "ORO", "deliveryInfo": {"deliveryType": "DELIVERY"}}}
+        _deep_merge(payload, {"originProduct": {"deliveryInfo": {"claimDeliveryInfo": {"shippingAddressId": 1}}}})
+        self.assertEqual(payload["originProduct"]["name"], "ORO")
+        self.assertEqual(payload["originProduct"]["deliveryInfo"]["deliveryType"], "DELIVERY")
+        self.assertEqual(payload["originProduct"]["deliveryInfo"]["claimDeliveryInfo"]["shippingAddressId"], 1)
+
     def test_channel_sales_aggregates_order_based_net_sales(self):
         MarketplaceSettlement.objects.create(
             channel="coupang", external_key="NP-1", external_order_id="N-1",
