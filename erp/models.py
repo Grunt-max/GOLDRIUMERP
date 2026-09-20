@@ -990,6 +990,7 @@ class MarketplaceSettlement(models.Model):
     recognized_on = models.DateField("매출인식일", db_index=True)
     settlement_on = models.DateField("정산예정일", null=True, blank=True)
     sale_type = models.CharField("구분", max_length=20, default="SALE")
+    record_type = models.CharField("정산 항목", max_length=20, default="PRODUCT")
     external_order_id = models.CharField("주문번호", max_length=120, blank=True)
     product_name = models.CharField("상품명", max_length=500, blank=True)
     option_name = models.CharField("옵션명", max_length=500, blank=True)

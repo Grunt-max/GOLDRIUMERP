@@ -385,6 +385,21 @@ def fetch_coupang_settlements(start_date, end_date):
                         "refund_amount": amount if sign < 0 else 0, "fee_amount": fee * sign,
                         "settlement_amount": settled * sign, "raw_data": {"sale": sale, "item": item},
                     })
+                delivery = sale.get("deliveryFee") or {}
+                delivery_amount = abs(_number(delivery.get("amount")))
+                delivery_settlement = abs(_number(delivery.get("settlementAmount")))
+                if delivery_amount or delivery_settlement:
+                    rows.append({
+                        "external_key": f"{sale.get('saleType')}-{sale.get('recognitionDate')}-{sale.get('orderId')}-delivery",
+                        "recognized_on": sale.get("recognitionDate"), "settlement_on": sale.get("settlementDate") or None,
+                        "sale_type": sale.get("saleType") or "SALE", "record_type": "SHIPPING",
+                        "external_order_id": str(sale.get("orderId") or ""), "product_name": "배송비",
+                        "option_name": "", "quantity": 0,
+                        "sale_amount": delivery_amount if sign > 0 else 0,
+                        "refund_amount": delivery_amount if sign < 0 else 0,
+                        "fee_amount": (abs(_number(delivery.get("fee"))) + abs(_number(delivery.get("feeVat")))) * sign,
+                        "settlement_amount": delivery_settlement * sign, "raw_data": {"sale": sale, "deliveryFee": delivery},
+                    })
             if not result.get("hasNext") or not result.get("nextToken"):
                 break
             token = result["nextToken"]

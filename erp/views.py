@@ -115,23 +115,25 @@ def marketplace_sales_overview(request):
     if start_date > end_date:
         start_date, end_date = end_date, start_date
     channels = channel_configuration()
-    rows, grand = [], {"gross": Decimal("0"), "canceled": Decimal("0"), "net": Decimal("0"), "fees": Decimal("0"), "settlement": Decimal("0"), "orders": 0, "quantity": 0}
+    rows, grand = [], {"gross": Decimal("0"), "canceled": Decimal("0"), "net": Decimal("0"), "shipping": Decimal("0"), "fees": Decimal("0"), "settlement": Decimal("0"), "orders": 0, "quantity": 0}
     for key, info in channels.items():
         orders = MarketplaceSettlement.objects.filter(channel=key, recognized_on__range=(start_date, end_date))
         if key == "naver":
             orders = orders.filter(sale_type="DAILY_SUMMARY")
         totals = orders.aggregate(gross=Sum("sale_amount"), canceled=Sum("refund_amount"), fees=Sum("fee_amount"), settlement=Sum("settlement_amount"),
                                   orders=Count("external_order_id", distinct=True), quantity=Sum("quantity"))
+        shipping = orders.filter(record_type="SHIPPING").aggregate(value=Sum("sale_amount"))["value"] or Decimal("0")
         gross, canceled = totals["gross"] or Decimal("0"), totals["canceled"] or Decimal("0")
         state = MarketplaceOrderSyncState.objects.filter(channel=key).first()
         rows.append({
             "key": key, "label": info["label"], "configured": info["configured"],
             "gross": gross, "canceled": canceled, "net": gross - canceled,
             "fees": totals["fees"] or 0, "settlement": totals["settlement"] or 0,
+            "shipping": shipping,
             "order_count": totals["orders"] or 0, "quantity": totals["quantity"] or 0, "state": state,
         })
         grand["gross"] += gross; grand["canceled"] += canceled
-        grand["fees"] += totals["fees"] or 0; grand["settlement"] += totals["settlement"] or 0
+        grand["shipping"] += shipping; grand["fees"] += totals["fees"] or 0; grand["settlement"] += totals["settlement"] or 0
         grand["orders"] += totals["orders"] or 0; grand["quantity"] += totals["quantity"] or 0
     grand["net"] = grand["gross"] - grand["canceled"]
     detail_rows = MarketplaceSettlement.objects.filter(recognized_on__range=(start_date, end_date)).exclude(sale_type="DAILY_SUMMARY")
