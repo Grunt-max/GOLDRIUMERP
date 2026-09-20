@@ -16,7 +16,7 @@ class OpenMarketProductForm(forms.ModelForm):
     class Meta:
         model = OpenMarketProduct
         fields = ("name", "brand", "model_name", "manufacturer", "origin_country", "category",
-                  "default_weight", "base_labor_cost", "target_margin_rate", "naver_fee_rate",
+                  "default_weight", "pricing_material", "silver_price_per_gram", "base_labor_cost", "target_margin_rate", "naver_fee_rate",
                   "coupang_fee_rate", "description", "detail_page_html", "active")
         widgets = {"description": forms.Textarea(attrs={"rows": 3}),
                    "detail_page_html": forms.Textarea(attrs={"rows": 5})}
@@ -31,7 +31,7 @@ class OpenMarketWorkspaceForm(forms.ModelForm):
     class Meta:
         model = OpenMarketProduct
         fields = ("code", "name", "brand", "category", "model_name", "manufacturer", "origin_country",
-                  "default_weight", "base_labor_cost", "target_margin_rate", "naver_fee_rate",
+                  "default_weight", "pricing_material", "silver_price_per_gram", "base_labor_cost", "target_margin_rate", "naver_fee_rate",
                   "coupang_fee_rate", "description", "detail_page_html", "image", "target_channels",
                   "workspace_status", "ai_instruction", "image_instruction", "memo")
         widgets = {

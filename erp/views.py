@@ -172,14 +172,20 @@ def marketplace_workspace_edit(request, pk=None):
             product = form.save()
             for channel in product.target_channels:
                 OpenMarketChannelSetting.objects.get_or_create(product=product, channel=channel)
-            if not product.variants.exists():
-                for code in ("14KY", "14KP", "18KY", "18KP"):
-                    OpenMarketVariant.objects.create(product=product, sku=f"{product.code}-{code}", base_variant=code)
+            gold_codes = ("14KY", "14KP", "18KY", "18KP")
+            desired_codes = ("S925",) if product.pricing_material == "silver" else gold_codes
+            for code in desired_codes:
+                OpenMarketVariant.objects.get_or_create(
+                    product=product, base_variant=code, specifications={},
+                    defaults={"sku": f"{product.code}-{code}"},
+                )
+            product.variants.filter(base_variant__in=gold_codes).update(active=product.pricing_material == "gold")
+            product.variants.filter(base_variant="S925").update(active=product.pricing_material == "silver")
         messages.success(request, "상품등록 작업실 초안을 저장했습니다.")
         return redirect("erp:marketplace_workspace_edit", pk=product.pk)
     pricing_rows = []
     if product:
-        for variant in product.variants.all():
+        for variant in product.variants.filter(active=True):
             pricing_rows.append({"variant": variant, "naver": variant.cost_and_price("naver"),
                                  "coupang": variant.cost_and_price("coupang")})
     return render(request, "erp/marketplace_workspace_edit.html", {

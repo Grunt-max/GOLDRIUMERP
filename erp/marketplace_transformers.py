@@ -7,12 +7,14 @@ DEFAULT_VARIANTS = (
     ("14KY", "14K", "Y"), ("14KP", "14K", "P"),
     ("18KY", "18K", "Y"), ("18KP", "18K", "P"),
 )
+SILVER_VARIANTS = (("S925", "925 Silver", "Silver"),)
 
 
 def canonical_variants(product):
     saved = {variant.base_variant: variant for variant in product.variants.all() if variant.active}
     rows = []
-    for code, material, market_color in DEFAULT_VARIANTS:
+    defaults = SILVER_VARIANTS if product.pricing_material == "silver" else DEFAULT_VARIANTS
+    for code, material, market_color in defaults:
         variant = saved.get(code)
         rows.append({
             "code": code, "sku": variant.sku if variant else f"{product.code}-{code}",

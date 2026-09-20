@@ -25,7 +25,8 @@ class MarketplaceReadOnlyTests(TestCase):
     def test_workspace_creates_product_channels_and_default_variants(self):
         response = self.client.post(reverse("erp:marketplace_workspace_create"), {
             "code": "STUDIO-001", "name": "GPT 목걸이", "brand": "골드리움",
-            "origin_country": "대한민국", "base_labor_cost": "20000", "target_margin_rate": "30",
+            "origin_country": "대한민국", "pricing_material": "gold", "silver_price_per_gram": "0",
+            "base_labor_cost": "20000", "target_margin_rate": "30",
             "naver_fee_rate": "6", "coupang_fee_rate": "11", "target_channels": ["naver", "coupang"],
             "workspace_status": "review", "ai_instruction": "선물용으로 작성",
         })
@@ -40,6 +41,20 @@ class MarketplaceReadOnlyTests(TestCase):
         edit_page = self.client.get(reverse("erp:marketplace_workspace_edit", args=[product.pk]))
         self.assertEqual(edit_page.status_code, 200)
         self.assertContains(edit_page, "GPT 콘텐츠 준비")
+
+    def test_workspace_silver_product_uses_silver_weight_cost(self):
+        response = self.client.post(reverse("erp:marketplace_workspace_create"), {
+            "code": "SILVER-001", "name": "실버 목걸이", "origin_country": "대한민국",
+            "pricing_material": "silver", "default_weight": "10", "silver_price_per_gram": "1500",
+            "base_labor_cost": "20000", "target_margin_rate": "30", "naver_fee_rate": "6",
+            "coupang_fee_rate": "11", "target_channels": ["naver"], "workspace_status": "draft",
+        })
+        product = OpenMarketProduct.objects.get(code="SILVER-001")
+        self.assertRedirects(response, reverse("erp:marketplace_workspace_edit", args=[product.pk]))
+        self.assertEqual(list(product.variants.values_list("base_variant", flat=True)), ["S925"])
+        price = product.variants.get().cost_and_price("naver")
+        self.assertEqual(price["gold_cost"], Decimal("15000"))
+        self.assertEqual(price["total_cost"], Decimal("35000"))
 
     def test_channel_sales_aggregates_order_based_net_sales(self):
         MarketplaceSettlement.objects.create(

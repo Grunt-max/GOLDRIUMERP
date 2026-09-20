@@ -713,6 +713,7 @@ class SaleItem(models.Model):
 
 
 class OpenMarketProduct(models.Model):
+    PRICING_MATERIAL_CHOICES = [("gold", "금 제품"), ("silver", "은 제품")]
     WORKSPACE_STATUS_CHOICES = [
         ("draft", "작성 중"), ("review", "검토 대기"),
         ("approved", "승인 완료"), ("uploaded", "업로드 완료"),
@@ -728,6 +729,8 @@ class OpenMarketProduct(models.Model):
     detail_page_html = models.TextField("상세페이지 HTML", blank=True)
     common_attributes = models.JSONField("공통 상품 속성", default=dict, blank=True)
     default_weight = models.DecimalField("기본 중량(g)", max_digits=12, decimal_places=3, null=True, blank=True)
+    pricing_material = models.CharField("가격 계산 재질", max_length=10, choices=PRICING_MATERIAL_CHOICES, default="gold")
+    silver_price_per_gram = models.DecimalField("은 원가(원/g)", max_digits=12, decimal_places=0, default=0)
     base_labor_cost = models.DecimalField("기본 공임 원가", max_digits=14, decimal_places=0, default=0)
     target_margin_rate = models.DecimalField("목표 마진율(%)", max_digits=6, decimal_places=2, default=30)
     naver_fee_rate = models.DecimalField("네이버 예상 수수료율(%)", max_digits=6, decimal_places=2, default=6)
@@ -795,6 +798,7 @@ class OpenMarketVariant(models.Model):
     BASE_VARIANT_CHOICES = [
         ("14KY", "14K 옐로우"), ("14KP", "14K 핑크"),
         ("18KY", "18K 옐로우"), ("18KP", "18K 핑크"),
+        ("S925", "925 Silver"),
         ("ETC", "기타"),
     ]
 
@@ -822,17 +826,22 @@ class OpenMarketVariant(models.Model):
         return Decimal("0.585") if self.base_variant.startswith("14K") else Decimal("0.750") if self.base_variant.startswith("18K") else Decimal("1")
 
     def cost_and_price(self, channel):
-        gold_price = GoldPrice.objects.filter(market_type="wholesale", is_confirmed=True).first()
         weight = self.weight if self.weight is not None else self.product.default_weight
         labor = self.labor_cost or self.product.base_labor_cost
-        if not gold_price or weight is None:
+        if weight is None:
             return {"gold_cost": None, "total_cost": None, "sale_price": None}
-        gold_cost = (weight * self.purity_rate * gold_price.applied_price_per_gram).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-        total_cost = gold_cost + labor
+        if self.base_variant == "S925" or self.product.pricing_material == "silver":
+            material_cost = (weight * self.product.silver_price_per_gram).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        else:
+            gold_price = GoldPrice.objects.filter(market_type="wholesale", is_confirmed=True).first()
+            if not gold_price:
+                return {"gold_cost": None, "total_cost": None, "sale_price": None}
+            material_cost = (weight * self.purity_rate * gold_price.applied_price_per_gram).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        total_cost = material_cost + labor
         fee = self.product.naver_fee_rate if channel == "naver" else self.product.coupang_fee_rate
         denominator = Decimal("1") - ((fee + self.product.target_margin_rate) / Decimal("100"))
         sale_price = None if denominator <= 0 else (total_cost / denominator / Decimal("1000")).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * Decimal("1000")
-        return {"gold_cost": gold_cost, "total_cost": total_cost, "sale_price": sale_price}
+        return {"gold_cost": material_cost, "total_cost": total_cost, "sale_price": sale_price}
 
 
 class MarketplaceProduct(models.Model):
