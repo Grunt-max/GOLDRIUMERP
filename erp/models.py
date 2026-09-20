@@ -984,6 +984,28 @@ class MarketplaceOrderSyncState(models.Model):
         ordering = ["channel"]
 
 
+class MarketplaceSettlement(models.Model):
+    channel = models.CharField("오픈마켓", max_length=20, choices=MarketplaceProduct.CHANNEL_CHOICES, db_index=True)
+    external_key = models.CharField("정산 고유키", max_length=200)
+    recognized_on = models.DateField("매출인식일", db_index=True)
+    settlement_on = models.DateField("정산예정일", null=True, blank=True)
+    sale_type = models.CharField("구분", max_length=20, default="SALE")
+    external_order_id = models.CharField("주문번호", max_length=120, blank=True)
+    product_name = models.CharField("상품명", max_length=500, blank=True)
+    option_name = models.CharField("옵션명", max_length=500, blank=True)
+    quantity = models.PositiveIntegerField("수량", default=0)
+    sale_amount = models.DecimalField("판매·매출금액", max_digits=14, decimal_places=0, default=0)
+    refund_amount = models.DecimalField("환불금액", max_digits=14, decimal_places=0, default=0)
+    fee_amount = models.DecimalField("수수료", max_digits=14, decimal_places=0, default=0)
+    settlement_amount = models.DecimalField("정산금액", max_digits=14, decimal_places=0, default=0)
+    raw_data = models.JSONField("API 원본", default=dict, blank=True)
+    synced_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-recognized_on", "channel", "external_key"]
+        constraints = [models.UniqueConstraint(fields=["channel", "external_key"], name="unique_marketplace_settlement")]
+
+
 class OpenMarketChannelOffer(models.Model):
     listing = models.ForeignKey(MarketplaceProduct, on_delete=models.CASCADE, related_name="normalized_offers")
     master_variant = models.ForeignKey(

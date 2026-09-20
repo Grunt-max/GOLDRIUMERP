@@ -18,9 +18,9 @@ from django.views.decorators.http import require_POST
 from .access import master_reauthentication_required
 from .gold_prices import collect_gold_prices
 from .forms import CompanyProfileForm, CustomerForm, DailyActivityForm, DailyActivityPlanForm, GoldLedgerEntryForm, GoldPriceForm, MaterialForm, OpenMarketChannelSettingForm, OpenMarketProductForm, OrderForm, ProductColorForm, ProductForm, PurchaseHeaderForm, PurchaseLineFormSet, PurchaseSupplierForm, SaleHeaderForm, SaleLineFormSet
-from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, Factory, GoldLedgerEntry, GoldPrice, MarketplaceOrder, MarketplaceOrderSyncState, MarketplaceProduct, Material, OpenMarketChannelOffer, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketVariant, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleCustomerChangeLog, SaleItem, SaleTransaction, generate_transaction_no
+from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, Factory, GoldLedgerEntry, GoldPrice, MarketplaceOrder, MarketplaceOrderSyncState, MarketplaceProduct, MarketplaceSettlement, Material, OpenMarketChannelOffer, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketVariant, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleCustomerChangeLog, SaleItem, SaleTransaction, generate_transaction_no
 from .open_market_aliases import CHANNEL_ONLY_FIELDS, COMMON_FIELD_ALIASES
-from .marketplaces import MarketplaceError, channel_configuration, fetch_coupang_orders, fetch_coupang_products, fetch_naver_orders, fetch_naver_products
+from .marketplaces import MarketplaceError, channel_configuration, fetch_coupang_products, fetch_coupang_settlements, fetch_naver_products, fetch_naver_settlements
 from .marketplace_transformers import build_channel_preview
 from .product_catalog import rebuild_product_weight_profiles
 
@@ -115,24 +115,26 @@ def marketplace_sales_overview(request):
     if start_date > end_date:
         start_date, end_date = end_date, start_date
     channels = channel_configuration()
-    rows, grand = [], {"gross": Decimal("0"), "canceled": Decimal("0"), "net": Decimal("0"), "orders": 0, "quantity": 0}
+    rows, grand = [], {"gross": Decimal("0"), "canceled": Decimal("0"), "net": Decimal("0"), "fees": Decimal("0"), "settlement": Decimal("0"), "orders": 0, "quantity": 0}
     for key, info in channels.items():
-        orders = MarketplaceOrder.objects.filter(channel=key, ordered_at__date__range=(start_date, end_date))
-        totals = orders.aggregate(gross=Sum("gross_amount"), canceled=Sum("canceled_amount"),
+        orders = MarketplaceSettlement.objects.filter(channel=key, recognized_on__range=(start_date, end_date))
+        totals = orders.aggregate(gross=Sum("sale_amount"), canceled=Sum("refund_amount"), fees=Sum("fee_amount"), settlement=Sum("settlement_amount"),
                                   orders=Count("external_order_id", distinct=True), quantity=Sum("quantity"))
         gross, canceled = totals["gross"] or Decimal("0"), totals["canceled"] or Decimal("0")
         state = MarketplaceOrderSyncState.objects.filter(channel=key).first()
         rows.append({
             "key": key, "label": info["label"], "configured": info["configured"],
-            "gross": gross, "canceled": canceled, "net": max(Decimal("0"), gross - canceled),
+            "gross": gross, "canceled": canceled, "net": gross - canceled,
+            "fees": totals["fees"] or 0, "settlement": totals["settlement"] or 0,
             "order_count": totals["orders"] or 0, "quantity": totals["quantity"] or 0, "state": state,
         })
         grand["gross"] += gross; grand["canceled"] += canceled
+        grand["fees"] += totals["fees"] or 0; grand["settlement"] += totals["settlement"] or 0
         grand["orders"] += totals["orders"] or 0; grand["quantity"] += totals["quantity"] or 0
-    grand["net"] = max(Decimal("0"), grand["gross"] - grand["canceled"])
-    detail_rows = MarketplaceOrder.objects.filter(ordered_at__date__range=(start_date, end_date))
+    grand["net"] = grand["gross"] - grand["canceled"]
+    detail_rows = MarketplaceSettlement.objects.filter(recognized_on__range=(start_date, end_date))
     product_rows = list(detail_rows.values("channel", "product_name").annotate(
-        gross=Sum("gross_amount"), canceled=Sum("canceled_amount"), quantity=Sum("quantity")
+        gross=Sum("sale_amount"), canceled=Sum("refund_amount"), fees=Sum("fee_amount"), settlement=Sum("settlement_amount"), quantity=Sum("quantity")
     ).order_by("-gross")[:100])
     for product in product_rows:
         product["net"] = max(Decimal("0"), product["gross"] - product["canceled"])
@@ -159,6 +161,15 @@ def _sync_marketplace_orders(channel, rows):
     return len(rows)
 
 
+@transaction.atomic
+def _sync_marketplace_settlements(channel, rows):
+    for row in rows:
+        MarketplaceSettlement.objects.update_or_create(channel=channel, external_key=row["external_key"], defaults=row)
+    state, _ = MarketplaceOrderSyncState.objects.get_or_create(channel=channel)
+    state.last_synced_at = timezone.now(); state.last_error = ""; state.save()
+    return len(rows)
+
+
 @require_POST
 def marketplace_order_sync(request, channel):
     if channel not in {"naver", "coupang"}:
@@ -171,9 +182,9 @@ def marketplace_order_sync(request, channel):
         messages.error(request, "연동 설정이 부족합니다: " + ", ".join(config["missing"]))
     else:
         try:
-            rows = fetch_naver_orders(start_date, end_date) if channel == "naver" else fetch_coupang_orders(start_date, end_date)
-            count = _sync_marketplace_orders(channel, rows)
-            messages.success(request, f"{config['label']} 주문 {count:,}건을 반영했습니다. 기존 주문은 중복 없이 최신 상태로 갱신했습니다.")
+            rows = fetch_naver_settlements(start_date, end_date) if channel == "naver" else fetch_coupang_settlements(start_date, end_date)
+            count = _sync_marketplace_settlements(channel, rows)
+            messages.success(request, f"{config['label']} 정산 매출 {count:,}건을 반영했습니다. 기존 내역은 중복 없이 갱신했습니다.")
         except (MarketplaceError, KeyError, ValueError) as exc:
             state, _ = MarketplaceOrderSyncState.objects.get_or_create(channel=channel)
             state.last_error = str(exc)[:2000]; state.save(update_fields=["last_error"])

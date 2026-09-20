@@ -280,3 +280,79 @@ def fetch_coupang_orders(start_date, end_date, max_pages=100):
                     break
         window_start = window_end + timedelta(days=1)
     return orders
+
+
+def fetch_naver_settlements(start_date, end_date):
+    token = _naver_token()
+    rows, window_start = [], start_date
+    while window_start <= end_date:
+        window_end = min(window_start + timedelta(days=30), end_date)
+        page = 1
+        while True:
+            query = urlencode({"startDate": window_start.isoformat(), "endDate": window_end.isoformat(),
+                               "page": page, "size": 1000})
+            result = _json_request(
+                f"https://api.commerce.naver.com/external/v1/pay-settle/settle/daily?{query}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            elements = result.get("elements") or []
+            for item in elements:
+                recognized = item.get("settleBasisEndDate") or item.get("settleBasisStartDate")
+                if not recognized:
+                    continue
+                rows.append({
+                    "external_key": f"daily-{recognized}-{item.get('merchantId', '')}-{item.get('settleMethodType', '')}",
+                    "recognized_on": recognized, "settlement_on": item.get("settleExpectDate") or None,
+                    "sale_type": "SALE", "external_order_id": "", "product_name": "네이버 일별 정산",
+                    "option_name": "", "quantity": 0,
+                    "sale_amount": abs(_number(item.get("paySettleAmount"))), "refund_amount": 0,
+                    "fee_amount": abs(_number(item.get("commissionSettleAmount"))),
+                    "settlement_amount": _number(item.get("settleAmount")), "raw_data": item,
+                })
+            pagination = result.get("pagination") or {}
+            if page >= pagination.get("totalPages", 1):
+                break
+            page += 1
+            time.sleep(0.55)
+        window_start = window_end + timedelta(days=1)
+        time.sleep(0.55)
+    return rows
+
+
+def fetch_coupang_settlements(start_date, end_date):
+    vendor_id = os.environ["COUPANG_VENDOR_ID"]
+    path = "/v2/providers/openapi/apis/api/v1/revenue-history"
+    rows, window_start = [], start_date
+    maximum_end = min(end_date, datetime.now(timezone(timedelta(hours=9))).date() - timedelta(days=1))
+    while window_start <= maximum_end:
+        window_end = min(window_start + timedelta(days=30), maximum_end)
+        if window_end < window_start:
+            break
+        token = ""
+        while True:
+            query = urlencode({"vendorId": vendor_id, "recognitionDateFrom": window_start.isoformat(),
+                               "recognitionDateTo": window_end.isoformat(), "token": token, "maxPerPage": 50})
+            result = _json_request(f"https://api-gateway.coupang.com{path}?{query}",
+                                   headers=_coupang_headers("GET", path, query))
+            for sale in result.get("data") or []:
+                sign = -1 if sale.get("saleType") == "REFUND" else 1
+                for index, item in enumerate(sale.get("items") or []):
+                    amount = abs(_number(item.get("saleAmount")))
+                    fee = abs(_number(item.get("serviceFee"))) + abs(_number(item.get("serviceFeeVat")))
+                    settled = abs(_number(item.get("settlementAmount")))
+                    rows.append({
+                        "external_key": f"{sale.get('saleType')}-{sale.get('recognitionDate')}-{sale.get('orderId')}-{item.get('vendorItemId')}-{index}",
+                        "recognized_on": sale.get("recognitionDate"), "settlement_on": sale.get("settlementDate") or None,
+                        "sale_type": sale.get("saleType") or "SALE", "external_order_id": str(sale.get("orderId") or ""),
+                        "product_name": item.get("productName") or "", "option_name": item.get("vendorItemName") or "",
+                        "quantity": abs(_number(item.get("quantity"))), "sale_amount": amount if sign > 0 else 0,
+                        "refund_amount": amount if sign < 0 else 0, "fee_amount": fee * sign,
+                        "settlement_amount": settled * sign, "raw_data": {"sale": sale, "item": item},
+                    })
+            if not result.get("hasNext") or not result.get("nextToken"):
+                break
+            token = result["nextToken"]
+            time.sleep(0.55)
+        window_start = window_end + timedelta(days=1)
+        time.sleep(0.55)
+    return rows
