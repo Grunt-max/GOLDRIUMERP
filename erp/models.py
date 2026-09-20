@@ -943,6 +943,47 @@ class MarketplaceProduct(models.Model):
         return limit is None or all(abs(price) <= limit for price in self.option_additional_prices)
 
 
+class MarketplaceOrder(models.Model):
+    CHANNEL_CHOICES = MarketplaceProduct.CHANNEL_CHOICES
+
+    channel = models.CharField("오픈마켓", max_length=20, choices=CHANNEL_CHOICES, db_index=True)
+    external_order_id = models.CharField("주문번호", max_length=120, db_index=True)
+    external_product_order_id = models.CharField("상품주문번호", max_length=120)
+    ordered_at = models.DateTimeField("주문일시", db_index=True)
+    status = models.CharField("주문상태", max_length=100, blank=True)
+    product_name = models.CharField("상품명", max_length=500, blank=True)
+    option_name = models.CharField("옵션명", max_length=500, blank=True)
+    external_product_id = models.CharField("상품번호", max_length=120, blank=True)
+    quantity = models.PositiveIntegerField("수량", default=1)
+    gross_amount = models.DecimalField("주문금액", max_digits=14, decimal_places=0, default=0)
+    canceled_amount = models.DecimalField("취소·반품액", max_digits=14, decimal_places=0, default=0)
+    channel_fee = models.DecimalField("채널 수수료", max_digits=14, decimal_places=0, default=0)
+    expected_settlement_amount = models.DecimalField("정산 예정액", max_digits=14, decimal_places=0, default=0)
+    raw_data = models.JSONField("API 원본", default=dict, blank=True)
+    synced_at = models.DateTimeField("마지막 수집", auto_now=True)
+
+    class Meta:
+        ordering = ["-ordered_at", "channel", "external_product_order_id"]
+        constraints = [models.UniqueConstraint(
+            fields=["channel", "external_product_order_id"], name="unique_marketplace_product_order"
+        )]
+
+    @property
+    def net_amount(self):
+        return max(Decimal("0"), self.gross_amount - self.canceled_amount)
+
+
+class MarketplaceOrderSyncState(models.Model):
+    channel = models.CharField("오픈마켓", max_length=20, choices=MarketplaceProduct.CHANNEL_CHOICES, unique=True)
+    last_synced_at = models.DateTimeField("마지막 수집", null=True, blank=True)
+    earliest_order_at = models.DateTimeField("최초 주문", null=True, blank=True)
+    latest_order_at = models.DateTimeField("최근 주문", null=True, blank=True)
+    last_error = models.TextField("최근 오류", blank=True)
+
+    class Meta:
+        ordering = ["channel"]
+
+
 class OpenMarketChannelOffer(models.Model):
     listing = models.ForeignKey(MarketplaceProduct, on_delete=models.CASCADE, related_name="normalized_offers")
     master_variant = models.ForeignKey(

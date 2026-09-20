@@ -9,6 +9,7 @@ urlpatterns = [
     path("marketplaces/master-products/<int:pk>/", views.marketplace_master_product_detail, name="marketplace_master_product_detail"),
     path("marketplaces/channels/<str:channel>/", views.marketplace_channel_items, name="marketplace_channel_items"),
     path("marketplaces/sales/", views.marketplace_sales_overview, name="marketplace_sales_overview"),
+    path("marketplaces/sales/<str:channel>/sync/", views.marketplace_order_sync, name="marketplace_order_sync"),
     path("marketplaces/products/<int:pk>/", views.marketplace_product_detail, name="marketplace_product_detail"),
     path("marketplaces/products/<int:pk>/import/", views.marketplace_product_import, name="marketplace_product_import"),
     path("marketplaces/<str:channel>/sync/", views.marketplace_sync, name="marketplace_sync"),

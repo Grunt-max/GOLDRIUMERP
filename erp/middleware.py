@@ -26,6 +26,7 @@ ROUTE_SECTIONS = {
     "marketplace_master_product_detail": "marketplaces", "marketplace_channel_items": "marketplaces",
     "marketplace_sales_overview": "marketplaces", "marketplace_product_detail": "marketplaces",
     "marketplace_product_import": "marketplaces", "marketplace_sync": "marketplaces",
+    "marketplace_order_sync": "marketplaces",
 }
 
 

@@ -1,5 +1,6 @@
 import os
 from decimal import Decimal
+from datetime import datetime, timezone
 from urllib.parse import parse_qs
 from unittest.mock import patch
 
@@ -7,7 +8,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
-from erp.models import MarketplaceProduct, OpenMarketChannelOffer, OpenMarketProduct, OpenMarketVariant
+from erp.models import MarketplaceOrder, MarketplaceProduct, OpenMarketChannelOffer, OpenMarketProduct, OpenMarketVariant
 
 
 class MarketplaceReadOnlyTests(TestCase):
@@ -20,6 +21,38 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "읽기 전용")
         self.assertContains(response, "판매량과 매출은 주문 API 연결 후 추가됩니다")
+
+    def test_channel_sales_aggregates_order_based_net_sales(self):
+        MarketplaceOrder.objects.create(
+            channel="naver", external_order_id="N-1", external_product_order_id="NP-1",
+            ordered_at=datetime(2026, 9, 10, 1, tzinfo=timezone.utc), product_name="목걸이",
+            quantity=2, gross_amount=200000, canceled_amount=50000,
+        )
+        response = self.client.get(reverse("erp:marketplace_sales_overview"), {
+            "start": "2026-09-01", "end": "2026-09-30",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "150,000원")
+        self.assertContains(response, "상품별 매출")
+        self.assertContains(response, "목걸이")
+
+    @patch.dict(os.environ, {"NAVER_COMMERCE_CLIENT_ID": "id", "NAVER_COMMERCE_CLIENT_SECRET": "secret"})
+    @patch("erp.views.fetch_naver_orders")
+    def test_order_sync_updates_same_product_order_without_duplicates(self, fetch_orders):
+        base = {
+            "external_order_id": "N-1", "external_product_order_id": "NP-1",
+            "ordered_at": datetime(2026, 9, 10, 1, tzinfo=timezone.utc), "status": "PAYED",
+            "product_name": "목걸이", "option_name": "14K", "external_product_id": "P-1",
+            "quantity": 1, "gross_amount": 100000, "canceled_amount": 0, "channel_fee": 0,
+            "expected_settlement_amount": 0, "raw_data": {},
+        }
+        fetch_orders.return_value = [base]
+        url = reverse("erp:marketplace_order_sync", args=["naver"])
+        self.client.post(url, {"start": "2026-09-01", "end": "2026-09-30"})
+        fetch_orders.return_value = [{**base, "status": "CANCELED", "canceled_amount": 100000}]
+        self.client.post(url, {"start": "2026-09-01", "end": "2026-09-30"})
+        self.assertEqual(MarketplaceOrder.objects.count(), 1)
+        self.assertEqual(MarketplaceOrder.objects.get().net_amount, Decimal("0"))
 
     def test_marketplace_snapshot_can_create_or_link_erp_master(self):
         snapshot = MarketplaceProduct.objects.create(
