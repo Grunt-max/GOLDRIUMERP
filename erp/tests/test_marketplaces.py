@@ -22,6 +22,25 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertContains(response, "읽기 전용")
         self.assertContains(response, "판매량과 매출은 주문 API 연결 후 추가됩니다")
 
+    def test_workspace_creates_product_channels_and_default_variants(self):
+        response = self.client.post(reverse("erp:marketplace_workspace_create"), {
+            "code": "STUDIO-001", "name": "GPT 목걸이", "brand": "골드리움",
+            "origin_country": "대한민국", "base_labor_cost": "20000", "target_margin_rate": "30",
+            "naver_fee_rate": "6", "coupang_fee_rate": "11", "target_channels": ["naver", "coupang"],
+            "workspace_status": "review", "ai_instruction": "선물용으로 작성",
+        })
+        product = OpenMarketProduct.objects.get(code="STUDIO-001")
+        self.assertRedirects(response, reverse("erp:marketplace_workspace_edit", args=[product.pk]))
+        self.assertEqual(product.workspace_status, "review")
+        self.assertEqual(product.target_channels, ["naver", "coupang"])
+        self.assertEqual(product.variants.count(), 4)
+        self.assertEqual(set(product.channel_settings.values_list("channel", flat=True)), {"naver", "coupang"})
+        page = self.client.get(reverse("erp:marketplace_workspace"))
+        self.assertContains(page, "GPT 목걸이")
+        edit_page = self.client.get(reverse("erp:marketplace_workspace_edit", args=[product.pk]))
+        self.assertEqual(edit_page.status_code, 200)
+        self.assertContains(edit_page, "GPT 콘텐츠 준비")
+
     def test_channel_sales_aggregates_order_based_net_sales(self):
         MarketplaceSettlement.objects.create(
             channel="coupang", external_key="NP-1", external_order_id="N-1",

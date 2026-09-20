@@ -17,7 +17,7 @@ from django.utils.dateparse import parse_date
 from django.views.decorators.http import require_POST
 from .access import master_reauthentication_required
 from .gold_prices import collect_gold_prices
-from .forms import CompanyProfileForm, CustomerForm, DailyActivityForm, DailyActivityPlanForm, GoldLedgerEntryForm, GoldPriceForm, MaterialForm, OpenMarketChannelSettingForm, OpenMarketProductForm, OrderForm, ProductColorForm, ProductForm, PurchaseHeaderForm, PurchaseLineFormSet, PurchaseSupplierForm, SaleHeaderForm, SaleLineFormSet
+from .forms import CompanyProfileForm, CustomerForm, DailyActivityForm, DailyActivityPlanForm, GoldLedgerEntryForm, GoldPriceForm, MaterialForm, OpenMarketChannelSettingForm, OpenMarketProductForm, OpenMarketWorkspaceForm, OrderForm, ProductColorForm, ProductForm, PurchaseHeaderForm, PurchaseLineFormSet, PurchaseSupplierForm, SaleHeaderForm, SaleLineFormSet
 from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, Factory, GoldLedgerEntry, GoldPrice, MarketplaceOrder, MarketplaceOrderSyncState, MarketplaceProduct, MarketplaceSettlement, Material, OpenMarketChannelOffer, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketVariant, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleCustomerChangeLog, SaleItem, SaleTransaction, generate_transaction_no
 from .open_market_aliases import CHANNEL_ONLY_FIELDS, COMMON_FIELD_ALIASES
 from .marketplaces import MarketplaceError, channel_configuration, fetch_coupang_products, fetch_coupang_settlements, fetch_naver_products, fetch_naver_settlements
@@ -145,6 +145,45 @@ def marketplace_sales_overview(request):
     return render(request, "erp/marketplace_sales_overview.html", {
         "channel_rows": rows, "grand": grand, "start_date": start_date, "end_date": end_date,
         "orders": Paginator(detail_rows, 50).get_page(request.GET.get("page")), "product_rows": product_rows,
+    })
+
+
+def marketplace_workspace(request):
+    query = request.GET.get("q", "").strip()
+    status = request.GET.get("status", "").strip()
+    products = OpenMarketProduct.objects.prefetch_related("variants", "channel_settings").order_by("-updated_at")
+    if query:
+        products = products.filter(Q(code__icontains=query) | Q(name__icontains=query))
+    if status in dict(OpenMarketProduct.WORKSPACE_STATUS_CHOICES):
+        products = products.filter(workspace_status=status)
+    counts = {key: OpenMarketProduct.objects.filter(workspace_status=key).count()
+              for key, _ in OpenMarketProduct.WORKSPACE_STATUS_CHOICES}
+    return render(request, "erp/marketplace_workspace.html", {
+        "products": products, "query": query, "selected_status": status,
+        "status_choices": OpenMarketProduct.WORKSPACE_STATUS_CHOICES, "counts": counts,
+    })
+
+
+def marketplace_workspace_edit(request, pk=None):
+    product = get_object_or_404(OpenMarketProduct, pk=pk) if pk else None
+    form = OpenMarketWorkspaceForm(request.POST or None, request.FILES or None, instance=product)
+    if request.method == "POST" and form.is_valid():
+        with transaction.atomic():
+            product = form.save()
+            for channel in product.target_channels:
+                OpenMarketChannelSetting.objects.get_or_create(product=product, channel=channel)
+            if not product.variants.exists():
+                for code in ("14KY", "14KP", "18KY", "18KP"):
+                    OpenMarketVariant.objects.create(product=product, sku=f"{product.code}-{code}", base_variant=code)
+        messages.success(request, "상품등록 작업실 초안을 저장했습니다.")
+        return redirect("erp:marketplace_workspace_edit", pk=product.pk)
+    pricing_rows = []
+    if product:
+        for variant in product.variants.all():
+            pricing_rows.append({"variant": variant, "naver": variant.cost_and_price("naver"),
+                                 "coupang": variant.cost_and_price("coupang")})
+    return render(request, "erp/marketplace_workspace_edit.html", {
+        "form": form, "product": product, "pricing_rows": pricing_rows,
     })
 
 

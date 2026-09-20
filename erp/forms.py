@@ -22,6 +22,31 @@ class OpenMarketProductForm(forms.ModelForm):
                    "detail_page_html": forms.Textarea(attrs={"rows": 5})}
 
 
+class OpenMarketWorkspaceForm(forms.ModelForm):
+    target_channels = forms.MultipleChoiceField(
+        label="등록 대상 채널", choices=OpenMarketChannelSetting.CHANNEL_CHOICES,
+        widget=forms.CheckboxSelectMultiple, required=False,
+    )
+
+    class Meta:
+        model = OpenMarketProduct
+        fields = ("code", "name", "brand", "category", "model_name", "manufacturer", "origin_country",
+                  "default_weight", "base_labor_cost", "target_margin_rate", "naver_fee_rate",
+                  "coupang_fee_rate", "description", "detail_page_html", "image", "target_channels",
+                  "workspace_status", "ai_instruction", "image_instruction", "memo")
+        widgets = {
+            "description": forms.Textarea(attrs={"rows": 3, "placeholder": "고객에게 보여줄 핵심 설명"}),
+            "detail_page_html": forms.Textarea(attrs={"rows": 5, "placeholder": "상세페이지 본문 또는 HTML"}),
+            "ai_instruction": forms.Textarea(attrs={"rows": 3, "placeholder": "예: 30대 여성, 선물용, 고급스럽고 간결한 문체"}),
+            "image_instruction": forms.Textarea(attrs={"rows": 3, "placeholder": "예: 흰 배경, 제품 중앙 정렬, 금색은 자연스럽게"}),
+            "memo": forms.Textarea(attrs={"rows": 2}),
+            "image": forms.ClearableFileInput(attrs={"accept": ".jpg,.jpeg,.png,.webp,.gif"}),
+        }
+
+    def clean_target_channels(self):
+        return list(self.cleaned_data.get("target_channels") or [])
+
+
 class OpenMarketChannelSettingForm(forms.ModelForm):
     class Meta:
         model = OpenMarketChannelSetting

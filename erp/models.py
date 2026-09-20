@@ -713,6 +713,10 @@ class SaleItem(models.Model):
 
 
 class OpenMarketProduct(models.Model):
+    WORKSPACE_STATUS_CHOICES = [
+        ("draft", "작성 중"), ("review", "검토 대기"),
+        ("approved", "승인 완료"), ("uploaded", "업로드 완료"),
+    ]
     code = models.CharField("오픈마켓 상품번호", max_length=40, unique=True)
     name = models.CharField("마스터 상품명", max_length=200)
     brand = models.CharField("브랜드", max_length=100, blank=True)
@@ -734,6 +738,12 @@ class OpenMarketProduct(models.Model):
     )
     active = models.BooleanField("운영 상품", default=False)
     memo = models.TextField("메모", blank=True)
+    workspace_status = models.CharField(
+        "작업 상태", max_length=20, choices=WORKSPACE_STATUS_CHOICES, default="draft", db_index=True,
+    )
+    target_channels = models.JSONField("등록 대상 채널", default=list, blank=True)
+    ai_instruction = models.TextField("GPT 상품문구 작업 지시", blank=True)
+    image_instruction = models.TextField("이미지 수정 지시", blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
