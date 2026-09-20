@@ -24,7 +24,7 @@ class MarketplaceReadOnlyTests(TestCase):
 
     def test_channel_sales_aggregates_order_based_net_sales(self):
         MarketplaceSettlement.objects.create(
-            channel="naver", external_key="NP-1", external_order_id="N-1",
+            channel="coupang", external_key="NP-1", external_order_id="N-1",
             recognized_on=date(2026, 9, 10), product_name="목걸이", quantity=2,
             sale_amount=200000, refund_amount=50000, fee_amount=10000, settlement_amount=140000,
         )

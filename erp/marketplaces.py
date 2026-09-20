@@ -303,7 +303,7 @@ def fetch_naver_settlements(start_date, end_date):
                 rows.append({
                     "external_key": f"daily-{recognized}-{item.get('merchantId', '')}-{item.get('settleMethodType', '')}",
                     "recognized_on": recognized, "settlement_on": item.get("settleExpectDate") or None,
-                    "sale_type": "SALE", "external_order_id": "", "product_name": "네이버 일별 정산",
+                    "sale_type": "DAILY_SUMMARY", "external_order_id": "", "product_name": "네이버 일별 정산",
                     "option_name": "", "quantity": 0,
                     "sale_amount": abs(_number(item.get("paySettleAmount"))), "refund_amount": 0,
                     "fee_amount": abs(_number(item.get("commissionSettleAmount"))),
@@ -315,6 +315,42 @@ def fetch_naver_settlements(start_date, end_date):
             page += 1
             time.sleep(0.55)
         window_start = window_end + timedelta(days=1)
+        time.sleep(0.55)
+    return rows + fetch_naver_settlement_cases(start_date, end_date, token=token)
+
+
+def fetch_naver_settlement_cases(start_date, end_date, token=None):
+    token = token or _naver_token()
+    rows, target_date = [], start_date
+    while target_date <= end_date:
+        page = 1
+        while True:
+            query = urlencode({"searchDate": target_date.isoformat(),
+                               "periodType": "SETTLE_CASEBYCASE_SETTLE_BASIS_DATE",
+                               "page": page, "size": 1000})
+            result = _json_request(
+                f"https://api.commerce.naver.com/external/v1/pay-settle/settle/case?{query}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            for item in result.get("elements") or []:
+                pay_amount = _number(item.get("paySettleAmount"))
+                rows.append({
+                    "external_key": f"case-{item.get('settleBasisDate')}-{item.get('productOrderId')}-{item.get('settleType')}",
+                    "recognized_on": item.get("settleBasisDate"), "settlement_on": item.get("settleExpectDate") or None,
+                    "sale_type": "REFUND" if pay_amount < 0 else "SALE",
+                    "external_order_id": str(item.get("orderId") or ""),
+                    "product_name": item.get("productName") or "", "option_name": "", "quantity": 0,
+                    "sale_amount": pay_amount if pay_amount > 0 else 0,
+                    "refund_amount": abs(pay_amount) if pay_amount < 0 else 0,
+                    "fee_amount": abs(_number(item.get("totalPayCommissionAmount"))),
+                    "settlement_amount": _number(item.get("settleExpectAmount")), "raw_data": item,
+                })
+            pagination = result.get("pagination") or {}
+            if page >= pagination.get("totalPages", 1):
+                break
+            page += 1
+            time.sleep(0.55)
+        target_date += timedelta(days=1)
         time.sleep(0.55)
     return rows
 

@@ -118,6 +118,8 @@ def marketplace_sales_overview(request):
     rows, grand = [], {"gross": Decimal("0"), "canceled": Decimal("0"), "net": Decimal("0"), "fees": Decimal("0"), "settlement": Decimal("0"), "orders": 0, "quantity": 0}
     for key, info in channels.items():
         orders = MarketplaceSettlement.objects.filter(channel=key, recognized_on__range=(start_date, end_date))
+        if key == "naver":
+            orders = orders.filter(sale_type="DAILY_SUMMARY")
         totals = orders.aggregate(gross=Sum("sale_amount"), canceled=Sum("refund_amount"), fees=Sum("fee_amount"), settlement=Sum("settlement_amount"),
                                   orders=Count("external_order_id", distinct=True), quantity=Sum("quantity"))
         gross, canceled = totals["gross"] or Decimal("0"), totals["canceled"] or Decimal("0")
@@ -132,7 +134,7 @@ def marketplace_sales_overview(request):
         grand["fees"] += totals["fees"] or 0; grand["settlement"] += totals["settlement"] or 0
         grand["orders"] += totals["orders"] or 0; grand["quantity"] += totals["quantity"] or 0
     grand["net"] = grand["gross"] - grand["canceled"]
-    detail_rows = MarketplaceSettlement.objects.filter(recognized_on__range=(start_date, end_date))
+    detail_rows = MarketplaceSettlement.objects.filter(recognized_on__range=(start_date, end_date)).exclude(sale_type="DAILY_SUMMARY")
     product_rows = list(detail_rows.values("channel", "product_name").annotate(
         gross=Sum("sale_amount"), canceled=Sum("refund_amount"), fees=Sum("fee_amount"), settlement=Sum("settlement_amount"), quantity=Sum("quantity")
     ).order_by("-gross")[:100])
