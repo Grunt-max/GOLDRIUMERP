@@ -1,5 +1,12 @@
 # 현재 인수인계
 
+## 2026-09-20 쿠팡 Secret Key 교체
+
+- NCP 운영 환경의 `COUPANG_SECRET_KEY`만 교체했다. Access Key와 Vendor ID는 변경하지 않았으며 비밀값은 Git과 문서에 기록하지 않는다.
+- 변경 전 환경파일은 NCP의 `/etc/goldrium-erp.env.pre-coupang-secret-20260920`에 권한 600으로 백업했다.
+- `goldrium-erp.service` 재시작 후 active, 외부 HTTPS 로그인 페이지 HTTP 200, 재시작 로그 정상 확인.
+- 로컬 `config/marketplace-secrets.ps1`은 변경하지 않았다.
+
 ## 2026-09-20 계좌·현금 거래처 재분류 및 세금계산서 매출
 
 - 기존 거래처를 모두 현금 거래처로 전환하고 `JDL`, `골드팡`, `주엔`, `덕신사`, `구디컴퍼니`만 이름이 정확히 일치할 때 계좌 거래처로 지정한다. 신규 거래처 기본값도 현금 거래처다.
