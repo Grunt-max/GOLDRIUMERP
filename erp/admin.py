@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, DailySaleSequence, Factory, GoldLedgerEntry, GoldPrice, MarketplaceProduct, Material, OpenMarketChannelOffer, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketProductImage, OpenMarketVariant, Order, Product, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, SaleCustomerChangeLog, SaleItem, SaleTransaction
+from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, DailySaleSequence, Factory, GoldLedgerEntry, GoldPrice, MarketplaceProduct, Material, OpenMarketChannelOffer, OpenMarketChannelOption, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketProductImage, OpenMarketVariant, Order, Product, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, SaleCustomerChangeLog, SaleItem, SaleTransaction
 
 
 @admin.register(Material)
@@ -139,6 +139,13 @@ class OpenMarketChannelOfferAdmin(admin.ModelAdmin):
     list_display = ("listing", "external_option_id", "option_name", "display_price", "sale_status", "synced_at")
     list_filter = ("listing__channel", "sale_status")
     search_fields = ("listing__name", "external_option_id", "option_name")
+
+
+@admin.register(OpenMarketChannelOption)
+class OpenMarketChannelOptionAdmin(admin.ModelAdmin):
+    list_display = ("setting", "seller_sku", "option_value_1", "option_value_2", "sale_price", "stock_quantity", "active")
+    list_filter = ("setting__channel", "active")
+    search_fields = ("setting__product__code", "setting__product__name", "seller_sku", "option_value_1", "option_value_2")
 
 
 @admin.register(OpenMarketMatchCandidate)

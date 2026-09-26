@@ -5,11 +5,11 @@ import re
 from django import forms
 from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator
-from django.forms import BaseFormSet, formset_factory
+from django.forms import BaseFormSet, formset_factory, inlineformset_factory
 from django.utils import timezone
 from django.db.models.functions import Lower, Trim
 from .quick_orders import parse_quick_order_lines, resolve_order_product
-from .models import CompanyProfile, Customer, DailyActivity, Factory, GoldLedgerEntry, GoldPrice, Material, OpenMarketChannelSetting, OpenMarketProduct, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleItem, SaleTransaction
+from .models import CompanyProfile, Customer, DailyActivity, Factory, GoldLedgerEntry, GoldPrice, Material, OpenMarketChannelOption, OpenMarketChannelSetting, OpenMarketProduct, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleItem, SaleTransaction
 
 
 class OpenMarketProductForm(forms.ModelForm):
@@ -56,6 +56,11 @@ class OpenMarketChannelSettingForm(forms.ModelForm):
         self.fields["channel_product_name"].help_text = "비워 두면 공통 상품명을 사용합니다."
         self.fields["notice_data"].help_text = "카테고리에 맞는 상품정보고시 JSON입니다. 등록 전 직접 확인·수정하세요."
         self.fields["extra_attributes"].help_text = "배송지, 추가 속성 등 채널 API에 더 보낼 JSON입니다. 고급 설정입니다."
+        if self.instance and self.instance.channel == "coupang":
+            for name in ("naver_origin_status", "naver_channel_display_status", "after_service_phone",
+                         "after_service_guide", "origin_area_code", "origin_area_content", "minor_purchasable"):
+                self.fields[name].disabled = True
+                self.fields[name].required = False
 
     class Meta:
         model = OpenMarketChannelSetting
@@ -66,6 +71,38 @@ class OpenMarketChannelSettingForm(forms.ModelForm):
                   "origin_area_code", "origin_area_content", "minor_purchasable", "extra_attributes")
         widgets = {"notice_data": forms.Textarea(attrs={"rows": 8, "spellcheck": "false"}),
                    "extra_attributes": forms.Textarea(attrs={"rows": 8, "spellcheck": "false"})}
+
+
+class OpenMarketChannelOptionForm(forms.ModelForm):
+    class Meta:
+        model = OpenMarketChannelOption
+        fields = ("internal_variant", "seller_sku", "option_name_1", "option_value_1",
+                  "option_name_2", "option_value_2", "sale_price", "stock_quantity", "active", "sort_order")
+        widgets = {
+            "sale_price": forms.NumberInput(attrs={"min": "0", "step": "100"}),
+            "stock_quantity": forms.NumberInput(attrs={"min": "0", "step": "1"}),
+            "sort_order": forms.NumberInput(attrs={"min": "0", "step": "1"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for field in self.fields.values():
+            field.widget.attrs["class"] = "field"
+        if self.instance and self.instance.setting_id:
+            self.fields["internal_variant"].queryset = self.instance.setting.product.variants.all()
+
+    def clean(self):
+        cleaned = super().clean()
+        name_2, value_2 = cleaned.get("option_name_2", "").strip(), cleaned.get("option_value_2", "").strip()
+        if bool(name_2) != bool(value_2):
+            raise ValidationError("두 번째 옵션은 옵션명과 옵션값을 함께 입력하세요.")
+        return cleaned
+
+
+OpenMarketChannelOptionFormSet = inlineformset_factory(
+    OpenMarketChannelSetting, OpenMarketChannelOption, form=OpenMarketChannelOptionForm,
+    extra=4, can_delete=True,
+)
 
 
 class StyledForm(forms.ModelForm):

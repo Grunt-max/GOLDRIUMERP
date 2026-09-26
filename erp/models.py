@@ -865,6 +865,35 @@ class OpenMarketVariant(models.Model):
         return {"gold_cost": material_cost, "total_cost": total_cost, "sale_price": sale_price}
 
 
+class OpenMarketChannelOption(models.Model):
+    setting = models.ForeignKey(
+        OpenMarketChannelSetting, on_delete=models.CASCADE, related_name="selling_options",
+        verbose_name="마켓 등록 설정",
+    )
+    internal_variant = models.ForeignKey(
+        OpenMarketVariant, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="channel_options", verbose_name="연결 내부 원가 기준",
+    )
+    seller_sku = models.CharField("채널 판매자 SKU", max_length=100)
+    option_name_1 = models.CharField("옵션명 1", max_length=50, default="선택")
+    option_value_1 = models.CharField("옵션값 1", max_length=100)
+    option_name_2 = models.CharField("옵션명 2", max_length=50, blank=True)
+    option_value_2 = models.CharField("옵션값 2", max_length=100, blank=True)
+    sale_price = models.DecimalField("채널 판매가", max_digits=14, decimal_places=0)
+    stock_quantity = models.PositiveIntegerField("채널 재고", default=999)
+    active = models.BooleanField("등록 사용", default=True)
+    sort_order = models.PositiveSmallIntegerField("표시 순서", default=0)
+
+    class Meta:
+        ordering = ["sort_order", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["setting", "seller_sku"], name="unique_channel_seller_sku"),
+        ]
+
+    def __str__(self):
+        return f"{self.setting} / {self.option_value_1}"
+
+
 class MarketplaceProduct(models.Model):
     CHANNEL_CHOICES = [("naver", "네이버 스마트스토어"), ("coupang", "쿠팡")]
 

@@ -8,7 +8,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
-from erp.models import MarketplaceOrder, MarketplaceProduct, MarketplaceSettlement, OpenMarketChannelOffer, OpenMarketProduct, OpenMarketVariant
+from erp.models import MarketplaceOrder, MarketplaceProduct, MarketplaceSettlement, OpenMarketChannelOffer, OpenMarketChannelOption, OpenMarketChannelSetting, OpenMarketProduct, OpenMarketVariant
 
 
 class MarketplaceReadOnlyTests(TestCase):
@@ -80,7 +80,13 @@ class MarketplaceReadOnlyTests(TestCase):
             target_channels=["naver", "coupang"], pricing_material="silver",
             default_weight=Decimal("10"), silver_price_per_gram=Decimal("1500"), base_labor_cost=20000,
         )
-        OpenMarketVariant.objects.create(product=product, sku="TEST-SILVER-S925", base_variant="S925")
+        internal = OpenMarketVariant.objects.create(product=product, sku="TEST-SILVER-S925", base_variant="S925")
+        for channel, price in (("naver", 80000), ("coupang", 85000)):
+            setting = OpenMarketChannelSetting.objects.create(product=product, channel=channel)
+            OpenMarketChannelOption.objects.create(
+                setting=setting, internal_variant=internal, seller_sku=f"TEST-{channel}",
+                option_name_1="색상", option_value_1="실버", sale_price=price,
+            )
         with patch("erp.views.publish_naver") as publish_naver, patch("erp.views.publish_coupang") as publish_coupang:
             response = self.client.post(reverse("erp:marketplace_workspace_simulate", args=[product.pk, "naver"]))
         self.assertRedirects(response, reverse("erp:marketplace_channel_items", args=["naver"]))
@@ -127,6 +133,10 @@ class MarketplaceReadOnlyTests(TestCase):
                 f"{prefix}-after_service_guide": "판매자에게 문의",
                 f"{prefix}-origin_area_code": "00", f"{prefix}-origin_area_content": "",
                 f"{prefix}-minor_purchasable": "on",
+                f"{prefix}-options-TOTAL_FORMS": "0",
+                f"{prefix}-options-INITIAL_FORMS": "0",
+                f"{prefix}-options-MIN_NUM_FORMS": "0",
+                f"{prefix}-options-MAX_NUM_FORMS": "1000",
             })
         response = self.client.post(reverse("erp:marketplace_workspace_edit", args=[product.pk]), data)
         self.assertRedirects(response, reverse("erp:marketplace_workspace_edit", args=[product.pk]))
@@ -135,6 +145,47 @@ class MarketplaceReadOnlyTests(TestCase):
         naver_setting.refresh_from_db()
         self.assertEqual(naver_setting.upload_status, "")
         self.assertEqual(naver_setting.last_upload_error, "")
+
+    def test_workspace_saves_independent_channel_options(self):
+        product = OpenMarketProduct.objects.create(code="OPTION-001", name="채널 옵션 상품")
+        self.client.get(reverse("erp:marketplace_workspace_edit", args=[product.pk]))
+        data = {
+            "code": product.code, "name": product.name, "pricing_material": "gold",
+            "silver_price_per_gram": "0", "base_labor_cost": "0", "target_margin_rate": "30",
+            "naver_fee_rate": "6", "coupang_fee_rate": "11", "workspace_status": "draft",
+        }
+        for channel in ("naver", "coupang"):
+            prefix = f"workspace-{channel}"
+            data.update({
+                f"{prefix}-category_code": "1", f"{prefix}-channel_product_name": f"{channel} 상품",
+                f"{prefix}-delivery_method": "DELIVERY", f"{prefix}-delivery_company_code": "",
+                f"{prefix}-outbound_location_code": "", f"{prefix}-return_center_code": "",
+                f"{prefix}-delivery_fee_type": "FREE", f"{prefix}-delivery_fee": "0",
+                f"{prefix}-return_fee": "0", f"{prefix}-notice_type": "JEWELLERY",
+                f"{prefix}-notice_data": '{}', f"{prefix}-extra_attributes": '{}',
+                f"{prefix}-naver_origin_status": "SUSPENSION",
+                f"{prefix}-naver_channel_display_status": "SUSPENSION",
+                f"{prefix}-after_service_phone": "", f"{prefix}-after_service_guide": "",
+                f"{prefix}-origin_area_code": "00", f"{prefix}-origin_area_content": "",
+                f"{prefix}-minor_purchasable": "on",
+                f"{prefix}-options-TOTAL_FORMS": "1", f"{prefix}-options-INITIAL_FORMS": "0",
+                f"{prefix}-options-MIN_NUM_FORMS": "0", f"{prefix}-options-MAX_NUM_FORMS": "1000",
+                f"{prefix}-options-0-seller_sku": f"{channel.upper()}-SKU-1",
+                f"{prefix}-options-0-option_name_1": "색상" if channel == "naver" else "스타일",
+                f"{prefix}-options-0-option_value_1": "로즈골드" if channel == "naver" else "기본형",
+                f"{prefix}-options-0-option_name_2": "", f"{prefix}-options-0-option_value_2": "",
+                f"{prefix}-options-0-sale_price": "190000" if channel == "naver" else "205000",
+                f"{prefix}-options-0-stock_quantity": "12", f"{prefix}-options-0-active": "on",
+                f"{prefix}-options-0-sort_order": "0",
+            })
+        response = self.client.post(reverse("erp:marketplace_workspace_edit", args=[product.pk]), data)
+        self.assertRedirects(response, reverse("erp:marketplace_workspace_edit", args=[product.pk]))
+        naver = product.channel_settings.get(channel="naver").selling_options.get()
+        coupang = product.channel_settings.get(channel="coupang").selling_options.get()
+        self.assertEqual(naver.sale_price, Decimal("190000"))
+        self.assertEqual(naver.option_name_1, "색상")
+        self.assertEqual(coupang.sale_price, Decimal("205000"))
+        self.assertEqual(coupang.option_name_1, "스타일")
 
     def test_publish_payload_deep_merge_preserves_generated_fields(self):
         from erp.marketplace_publish import _deep_merge
@@ -157,9 +208,13 @@ class MarketplaceReadOnlyTests(TestCase):
             default_weight=Decimal("1"), base_labor_cost=10000,
         )
         OpenMarketVariant.objects.create(product=product, sku="NAVER-001-S925", base_variant="S925")
-        OpenMarketChannelSetting.objects.create(
+        setting = OpenMarketChannelSetting.objects.create(
             product=product, channel="naver", category_code="50004168",
             after_service_phone="02-1234-5678", after_service_guide="판매자에게 문의",
+        )
+        OpenMarketChannelOption.objects.create(
+            setting=setting, seller_sku="NAVER-CUSTOM-1", option_name_1="길이",
+            option_value_1="42cm", sale_price=210000, stock_quantity=7,
         )
         request_api.return_value = {"originProductNo": 1}
         publish_naver(product)
@@ -170,6 +225,10 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertEqual(detail["afterServiceInfo"]["afterServiceTelephoneNumber"], "02-1234-5678")
         self.assertEqual(detail["originAreaInfo"]["originAreaCode"], "00")
         self.assertTrue(detail["minorPurchasable"])
+        combination = detail["optionInfo"]["optionCombinations"][0]
+        self.assertEqual(combination["optionName1"], "42cm")
+        self.assertEqual(combination["sellerManagerCode"], "NAVER-CUSTOM-1")
+        self.assertEqual(body["originProduct"]["salePrice"], 210000)
 
     def test_channel_sales_aggregates_order_based_net_sales(self):
         MarketplaceSettlement.objects.create(

@@ -17,7 +17,7 @@ from django.utils.dateparse import parse_date
 from django.views.decorators.http import require_POST
 from .access import master_reauthentication_required
 from .gold_prices import collect_gold_prices
-from .forms import CompanyProfileForm, CustomerForm, DailyActivityForm, DailyActivityPlanForm, GoldLedgerEntryForm, GoldPriceForm, MaterialForm, OpenMarketChannelSettingForm, OpenMarketProductForm, OpenMarketWorkspaceForm, OrderForm, ProductColorForm, ProductForm, PurchaseHeaderForm, PurchaseLineFormSet, PurchaseSupplierForm, SaleHeaderForm, SaleLineFormSet
+from .forms import CompanyProfileForm, CustomerForm, DailyActivityForm, DailyActivityPlanForm, GoldLedgerEntryForm, GoldPriceForm, MaterialForm, OpenMarketChannelOptionFormSet, OpenMarketChannelSettingForm, OpenMarketProductForm, OpenMarketWorkspaceForm, OrderForm, ProductColorForm, ProductForm, PurchaseHeaderForm, PurchaseLineFormSet, PurchaseSupplierForm, SaleHeaderForm, SaleLineFormSet
 from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, Factory, GoldLedgerEntry, GoldPrice, MarketplaceOrder, MarketplaceOrderSyncState, MarketplaceProduct, MarketplaceSettlement, Material, OpenMarketChannelOffer, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketVariant, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleCustomerChangeLog, SaleItem, SaleTransaction, generate_transaction_no
 from .open_market_aliases import CHANNEL_ONLY_FIELDS, COMMON_FIELD_ALIASES
 from .marketplaces import MarketplaceError, channel_configuration, fetch_coupang_products, fetch_coupang_settlements, fetch_naver_products, fetch_naver_settlements
@@ -170,6 +170,7 @@ def marketplace_workspace_edit(request, pk=None):
     product = get_object_or_404(OpenMarketProduct, pk=pk) if pk else None
     form = OpenMarketWorkspaceForm(request.POST or None, request.FILES or None, instance=product)
     channel_forms = {}
+    channel_option_formsets = {}
     if product:
         existing_settings = {row.channel: row for row in product.channel_settings.all()}
         for channel in ("naver", "coupang"):
@@ -179,8 +180,12 @@ def marketplace_workspace_edit(request, pk=None):
             channel_forms[channel] = OpenMarketChannelSettingForm(
                 request.POST or None, instance=setting, prefix=f"workspace-{channel}"
             )
+            channel_option_formsets[channel] = OpenMarketChannelOptionFormSet(
+                request.POST or None, instance=setting, prefix=f"workspace-{channel}-options"
+            )
     channel_forms_valid = all(channel_form.is_valid() for channel_form in channel_forms.values())
-    if request.method == "POST" and form.is_valid() and channel_forms_valid:
+    channel_options_valid = all(formset.is_valid() for formset in channel_option_formsets.values())
+    if request.method == "POST" and form.is_valid() and channel_forms_valid and channel_options_valid:
         with transaction.atomic():
             product = form.save()
             for channel in product.target_channels:
@@ -198,9 +203,11 @@ def marketplace_workspace_edit(request, pk=None):
                 setting = channel_form.save(commit=False)
                 if channel_form.has_changed():
                     setting.last_upload_error = ""
-                    if setting.upload_status == "failed":
-                        setting.upload_status = ""
+                if setting.upload_status == "failed":
+                    setting.upload_status = ""
                 setting.save()
+            for option_formset in channel_option_formsets.values():
+                option_formset.save()
         messages.success(request, "상품등록 작업실 초안을 저장했습니다.")
         return redirect("erp:marketplace_workspace_edit", pk=product.pk)
     pricing_rows = []
@@ -221,6 +228,8 @@ def marketplace_workspace_edit(request, pk=None):
     return render(request, "erp/marketplace_workspace_edit.html", {
         "form": form, "product": product, "pricing_rows": pricing_rows, "publishing": publishing,
         "naver_form": channel_forms.get("naver"), "coupang_form": channel_forms.get("coupang"),
+        "naver_option_formset": channel_option_formsets.get("naver"),
+        "coupang_option_formset": channel_option_formsets.get("coupang"),
     })
 
 
@@ -297,39 +306,42 @@ def marketplace_workspace_simulate(request, pk, channel):
     errors = []
     if product.workspace_status != "approved": errors.append("작업 상태를 승인 완료로 변경하세요.")
     if channel not in product.target_channels: errors.append("등록 대상 채널에 추가하세요.")
-    variants = list(product.variants.filter(active=True))
-    price_rows = [(row, row.cost_and_price(channel)["sale_price"]) for row in variants]
-    if not variants or any(price is None for _row, price in price_rows): errors.append("옵션 중량과 가격 기준을 입력하세요.")
+    setting, _ = OpenMarketChannelSetting.objects.get_or_create(product=product, channel=channel)
+    options = list(setting.selling_options.filter(active=True))
+    if not options or any(option.sale_price <= 0 for option in options):
+        errors.append("이 마켓에 등록할 판매 옵션과 판매가를 입력하세요.")
     if errors:
         messages.error(request, "테스트 등록 전 확인: " + " ".join(errors))
         return redirect("erp:marketplace_workspace_edit", pk=pk)
-    setting, _ = OpenMarketChannelSetting.objects.get_or_create(product=product, channel=channel)
-    base_price = min(price for _row, price in price_rows)
+    base_price = min(option.sale_price for option in options)
     if channel == "naver":
         raw_data = {"testPreview": True, "originProduct": {
             "name": setting.channel_product_name or product.name, "salePrice": int(base_price),
             "detailContent": product.detail_page_html,
             "detailAttribute": {"optionInfo": {"optionCombinations": [
-                {"id": row.sku, "optionName1": row.get_base_variant_display(),
-                 "price": int(price - base_price), "usable": True} for row, price in price_rows
+                {"id": option.seller_sku, "optionName1": option.option_value_1,
+                 "optionName2": option.option_value_2,
+                 "price": int(option.sale_price - base_price), "usable": True} for option in options
             ]}},
         }, "searchProduct": {"channelProducts": [{"discountedPrice": int(base_price)}]}}
     else:
         raw_data = {"testPreview": True, "sellerProductName": setting.channel_product_name or product.name,
-                    "items": [{"vendorItemId": row.sku, "vendorItemName": row.get_base_variant_display(),
-                               "salePrice": int(price)} for row, price in price_rows]}
+                    "items": [{"vendorItemId": option.seller_sku,
+                               "vendorItemName": " / ".join(filter(None, [option.option_value_1, option.option_value_2])),
+                               "salePrice": int(option.sale_price)} for option in options]}
     listing, _ = MarketplaceProduct.objects.update_or_create(
         channel=channel, external_product_id=external_id,
         defaults={"name": setting.channel_product_name or product.name, "status": "TEST_PREVIEW",
                   "category_code": setting.category_code, "image_url": request.build_absolute_uri(product.image.url) if product.image else "",
-                  "sale_price": base_price, "option_count": len(variants), "master_product": product, "raw_data": raw_data},
+                  "sale_price": base_price, "option_count": len(options), "master_product": product, "raw_data": raw_data},
     )
     listing.normalized_offers.all().delete()
     OpenMarketChannelOffer.objects.bulk_create([
-        OpenMarketChannelOffer(listing=listing, external_option_id=row.sku,
-                               option_name=row.get_base_variant_display(), sale_price=price,
-                               display_price=price, sale_status="TEST_PREVIEW")
-        for row, price in price_rows
+        OpenMarketChannelOffer(listing=listing, external_option_id=option.seller_sku,
+                               option_name=" / ".join(filter(None, [option.option_value_1, option.option_value_2])),
+                               sale_price=option.sale_price, display_price=option.sale_price,
+                               sale_status="TEST_PREVIEW")
+        for option in options
     ])
     messages.success(request, f"{listing.get_channel_display()} 내부 테스트 등록을 만들었습니다. 외부 채널에는 전송되지 않았습니다.")
     return redirect("erp:marketplace_channel_items", channel=channel)

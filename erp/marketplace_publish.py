@@ -10,8 +10,9 @@ from .marketplaces import MarketplaceError, _coupang_headers, _json_request, _na
 
 
 def _price(product, channel):
-    prices = [row.cost_and_price(channel)["sale_price"] for row in product.variants.filter(active=True)]
-    prices = [int(value) for value in prices if value is not None]
+    setting = product.channel_settings.filter(channel=channel).first()
+    prices = list(setting.selling_options.filter(active=True).values_list("sale_price", flat=True)) if setting else []
+    prices = [int(value) for value in prices if value is not None and value > 0]
     return min(prices) if prices else None
 
 
@@ -33,7 +34,7 @@ def publish_readiness(product, channel):
     if not product.detail_page_html: errors.append("상세페이지를 작성하세요.")
     if not setting or not setting.category_code: errors.append("채널 카테고리 코드를 입력하세요.")
     if setting and setting.external_product_id: errors.append(f"이미 등록된 상품입니다: {setting.external_product_id}")
-    if not _price(product, channel): errors.append("옵션 중량과 가격 기준을 입력하세요.")
+    if not _price(product, channel): errors.append("이 마켓에 등록할 판매 옵션과 판매가를 입력하세요.")
     if not setting: return errors
     if channel == "naver":
         if not setting.after_service_phone: errors.append("네이버 A/S 전화번호를 입력하세요.")
@@ -75,21 +76,31 @@ def publish_naver(product):
     setting = product.channel_settings.get(channel="naver")
     image_url = _naver_upload_image(product.image)
     price = _price(product, "naver")
-    variants = list(product.variants.filter(active=True))
-    option_combinations = [{"optionName1": row.get_base_variant_display(), "stockQuantity": 999,
-                            "price": max(0, int(row.cost_and_price("naver")["sale_price"]) - price),
-                            "sellerManagerCode": row.sku, "usable": True} for row in variants]
+    options = list(setting.selling_options.filter(active=True))
+    option_combinations = []
+    for option in options:
+        combination = {
+            "optionName1": option.option_value_1, "stockQuantity": option.stock_quantity,
+            "price": max(0, int(option.sale_price) - price),
+            "sellerManagerCode": option.seller_sku, "usable": True,
+        }
+        if option.option_name_2 and option.option_value_2:
+            combination["optionName2"] = option.option_value_2
+        option_combinations.append(combination)
+    group_names = {"optionGroupName1": options[0].option_name_1}
+    if options[0].option_name_2:
+        group_names["optionGroupName2"] = options[0].option_name_2
     origin = {
         "statusType": setting.naver_origin_status, "saleType": "NEW", "leafCategoryId": setting.category_code,
         "name": setting.channel_product_name or product.name, "detailContent": product.detail_page_html,
         "images": {"representativeImage": {"url": image_url}, "optionalImages": []},
-        "salePrice": price, "stockQuantity": 999,
+        "salePrice": price, "stockQuantity": sum(option.stock_quantity for option in options),
         "deliveryInfo": {"deliveryType": "DELIVERY", "deliveryAttributeType": "NORMAL",
                          "deliveryFee": {"deliveryFeeType": setting.delivery_fee_type, "baseFee": int(setting.delivery_fee)},
                          "claimDeliveryInfo": {"returnDeliveryFee": int(setting.return_fee), "exchangeDeliveryFee": int(setting.return_fee) * 2}},
         "detailAttribute": {"optionInfo": {
                                 "optionCombinationSortType": "CREATE",
-                                "optionCombinationGroupNames": {"optionGroupName1": "함량 및 색상"},
+                                "optionCombinationGroupNames": group_names,
                                 "optionCombinations": option_combinations,
                                 "useStockManagement": True,
                             },
@@ -120,19 +131,27 @@ def publish_coupang(product, image_url):
     vendor_id = __import__("os").environ["COUPANG_VENDOR_ID"]
     now = datetime.now()
     items = []
-    for row in product.variants.filter(active=True):
-        sale_price = int(row.cost_and_price("coupang")["sale_price"])
+    for option in setting.selling_options.filter(active=True):
+        sale_price = int(option.sale_price)
+        option_values = [option.option_value_1] + ([option.option_value_2] if option.option_value_2 else [])
+        option_attributes = [
+            {"attributeTypeName": option.option_name_1, "attributeValueName": option.option_value_1, "exposed": "EXPOSED"}
+        ]
+        if option.option_name_2 and option.option_value_2:
+            option_attributes.append({
+                "attributeTypeName": option.option_name_2,
+                "attributeValueName": option.option_value_2,
+                "exposed": "EXPOSED",
+            })
         items.append({
-            "itemName": row.get_base_variant_display(), "originalPrice": sale_price, "salePrice": sale_price,
-            "outboundShippingTimeDay": 2, "maximumBuyCount": 999, "unitCount": 1,
+            "itemName": " / ".join(option_values), "originalPrice": sale_price, "salePrice": sale_price,
+            "outboundShippingTimeDay": 2, "maximumBuyCount": max(1, option.stock_quantity), "unitCount": 1,
             "adultOnly": "EVERYONE", "taxType": "TAX", "parallelImported": "NOT_PARALLEL_IMPORTED",
             "overseasPurchased": "NOT_OVERSEAS_PURCHASED", "pccNeeded": False,
-            "externalVendorSku": row.sku,
+            "externalVendorSku": option.seller_sku,
             "images": [{"imageOrder": 0, "imageType": "REPRESENTATION", "vendorPath": image_url}],
             "notices": setting.notice_data.get("notices", []),
-            "attributes": setting.notice_data.get("attributes") or [
-                {"attributeTypeName": "함량 및 색상", "attributeValueName": row.get_base_variant_display(), "exposed": "EXPOSED"}
-            ],
+            "attributes": setting.notice_data.get("attributes") or option_attributes,
             "contents": [{"contentsType": "HTML", "contentDetails": [{"content": product.detail_page_html, "detailType": "TEXT"}]}],
             "offerCondition": "NEW",
         })
