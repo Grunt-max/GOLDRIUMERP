@@ -23,7 +23,7 @@ from .open_market_aliases import CHANNEL_ONLY_FIELDS, COMMON_FIELD_ALIASES
 from .marketplaces import MarketplaceError, channel_configuration, fetch_coupang_products, fetch_coupang_settlements, fetch_naver_products, fetch_naver_settlements
 from .marketplace_transformers import build_channel_preview
 from .marketplace_ai import ProductContentError, generate_product_content
-from .marketplace_publish import publish_coupang, publish_naver, publish_readiness
+from .marketplace_publish import _naver_price_plan, publish_coupang, publish_naver, publish_readiness
 from .product_catalog import rebuild_product_weight_profiles
 
 
@@ -315,19 +315,30 @@ def marketplace_workspace_simulate(request, pk, channel):
         return redirect("erp:marketplace_workspace_edit", pk=pk)
     base_price = min(option.sale_price for option in options)
     if channel == "naver":
+        try:
+            price_plan = _naver_price_plan(options)
+        except MarketplaceError as exc:
+            messages.error(request, f"테스트 등록 전 확인: {exc}")
+            return redirect("erp:marketplace_workspace_edit", pk=pk)
         raw_data = {"testPreview": True, "originProduct": {
-            "name": setting.channel_product_name or product.name, "salePrice": int(base_price),
+            "name": setting.channel_product_name or product.name,
+            "salePrice": price_plan["base_original"],
+            "customerBenefit": ({"immediateDiscountPolicy": {"discountMethod": {
+                "value": price_plan["discount"], "unitType": "WON",
+            }}} if price_plan["discount"] else {}),
             "detailContent": product.detail_page_html,
             "detailAttribute": {"optionInfo": {"optionCombinations": [
                 {"id": option.seller_sku, "optionName1": option.option_value_1,
                  "optionName2": option.option_value_2,
-                 "price": int(option.sale_price - base_price), "usable": True} for option in options
+                 "price": int(option.effective_original_price - price_plan["base_original"]),
+                 "usable": True} for option in options
             ]}},
-        }, "searchProduct": {"channelProducts": [{"discountedPrice": int(base_price)}]}}
+        }, "searchProduct": {"channelProducts": [{"discountedPrice": price_plan["base_sale"]}]}}
     else:
         raw_data = {"testPreview": True, "sellerProductName": setting.channel_product_name or product.name,
                     "items": [{"vendorItemId": option.seller_sku,
                                "vendorItemName": " / ".join(filter(None, [option.option_value_1, option.option_value_2])),
+                               "originalPrice": int(option.effective_original_price),
                                "salePrice": int(option.sale_price)} for option in options]}
     listing, _ = MarketplaceProduct.objects.update_or_create(
         channel=channel, external_product_id=external_id,
@@ -339,6 +350,7 @@ def marketplace_workspace_simulate(request, pk, channel):
     OpenMarketChannelOffer.objects.bulk_create([
         OpenMarketChannelOffer(listing=listing, external_option_id=option.seller_sku,
                                option_name=" / ".join(filter(None, [option.option_value_1, option.option_value_2])),
+                               original_price=option.effective_original_price,
                                sale_price=option.sale_price, display_price=option.sale_price,
                                sale_status="TEST_PREVIEW")
         for option in options

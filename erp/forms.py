@@ -5,7 +5,7 @@ import re
 from django import forms
 from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator
-from django.forms import BaseFormSet, formset_factory, inlineformset_factory
+from django.forms import BaseFormSet, BaseInlineFormSet, formset_factory, inlineformset_factory
 from django.utils import timezone
 from django.db.models.functions import Lower, Trim
 from .quick_orders import parse_quick_order_lines, resolve_order_product
@@ -77,8 +77,10 @@ class OpenMarketChannelOptionForm(forms.ModelForm):
     class Meta:
         model = OpenMarketChannelOption
         fields = ("internal_variant", "seller_sku", "option_name_1", "option_value_1",
-                  "option_name_2", "option_value_2", "sale_price", "stock_quantity", "active", "sort_order")
+                  "option_name_2", "option_value_2", "original_price", "sale_price",
+                  "stock_quantity", "active", "sort_order")
         widgets = {
+            "original_price": forms.NumberInput(attrs={"min": "0", "step": "100"}),
             "sale_price": forms.NumberInput(attrs={"min": "0", "step": "100"}),
             "stock_quantity": forms.NumberInput(attrs={"min": "0", "step": "1"}),
             "sort_order": forms.NumberInput(attrs={"min": "0", "step": "1"}),
@@ -96,12 +98,47 @@ class OpenMarketChannelOptionForm(forms.ModelForm):
         name_2, value_2 = cleaned.get("option_name_2", "").strip(), cleaned.get("option_value_2", "").strip()
         if bool(name_2) != bool(value_2):
             raise ValidationError("두 번째 옵션은 옵션명과 옵션값을 함께 입력하세요.")
+        original_price, sale_price = cleaned.get("original_price"), cleaned.get("sale_price")
+        if original_price is not None and sale_price is not None and original_price < sale_price:
+            self.add_error("original_price", "정상가는 판매가보다 낮을 수 없습니다.")
         return cleaned
+
+
+class BaseOpenMarketChannelOptionFormSet(BaseInlineFormSet):
+    def clean(self):
+        super().clean()
+        if any(self.errors):
+            return
+        rows = [form.cleaned_data for form in self.forms
+                if form.cleaned_data and not form.cleaned_data.get("DELETE")
+                and form.cleaned_data.get("seller_sku")]
+        active_rows = [row for row in rows if row.get("active")]
+        if not active_rows:
+            return
+        group_1 = {row.get("option_name_1", "").strip() for row in active_rows}
+        group_2 = {row.get("option_name_2", "").strip() for row in active_rows}
+        if len(group_1) > 1 or len(group_2) > 1:
+            raise ValidationError("한 마켓 내 모든 판매 옵션의 옵션명 1·2는 같아야 합니다.")
+        combinations = [(row.get("option_value_1", "").strip(), row.get("option_value_2", "").strip())
+                        for row in active_rows]
+        if len(combinations) != len(set(combinations)):
+            raise ValidationError("같은 옵션값 조합을 중복해서 등록할 수 없습니다.")
+        if self.instance.channel == "naver":
+            discounts = {
+                (row.get("original_price") if row.get("original_price") is not None else row["sale_price"])
+                - row["sale_price"]
+                for row in active_rows
+            }
+            if len(discounts) > 1:
+                raise ValidationError(
+                    "네이버는 한 상품에 즉시할인액 하나를 적용합니다. "
+                    "모든 옵션의 '정상가 - 판매가' 금액을 같게 맞춰 주세요."
+                )
 
 
 OpenMarketChannelOptionFormSet = inlineformset_factory(
     OpenMarketChannelSetting, OpenMarketChannelOption, form=OpenMarketChannelOptionForm,
-    extra=4, can_delete=True,
+    formset=BaseOpenMarketChannelOptionFormSet, extra=1, can_delete=True,
 )
 
 

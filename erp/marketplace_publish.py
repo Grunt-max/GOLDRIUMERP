@@ -16,6 +16,35 @@ def _price(product, channel):
     return min(prices) if prices else None
 
 
+def _active_options(setting):
+    return list(setting.selling_options.filter(active=True))
+
+
+def _naver_price_plan(options):
+    """Translate full option prices into Naver's base price, discount and deltas."""
+    if not options:
+        return None
+    rows = [{
+        "option": option,
+        "original": int(option.effective_original_price),
+        "sale": int(option.sale_price),
+    } for option in options]
+    discounts = {row["original"] - row["sale"] for row in rows}
+    if any(discount < 0 for discount in discounts):
+        raise MarketplaceError("네이버 정상가는 판매가보다 낮을 수 없습니다.")
+    if len(discounts) != 1:
+        raise MarketplaceError(
+            "네이버는 한 상품에 즉시할인액 하나를 적용합니다. "
+            "모든 옵션의 '정상가 - 판매가' 금액을 같게 맞춰 주세요."
+        )
+    base_original = min(row["original"] for row in rows)
+    discount = discounts.pop()
+    return {
+        "rows": rows, "base_original": base_original,
+        "base_sale": base_original - discount, "discount": discount,
+    }
+
+
 def _deep_merge(target, overrides):
     for key, value in (overrides or {}).items():
         if isinstance(value, dict) and isinstance(target.get(key), dict):
@@ -36,7 +65,16 @@ def publish_readiness(product, channel):
     if setting and setting.external_product_id: errors.append(f"이미 등록된 상품입니다: {setting.external_product_id}")
     if not _price(product, channel): errors.append("이 마켓에 등록할 판매 옵션과 판매가를 입력하세요.")
     if not setting: return errors
+    options = _active_options(setting)
+    if any(option.effective_original_price < option.sale_price for option in options):
+        errors.append("정상가는 판매가보다 낮을 수 없습니다.")
+    option_groups = {(option.option_name_1, option.option_name_2) for option in options}
+    if len(option_groups) > 1:
+        errors.append("한 마켓 내 모든 판매 옵션의 옵션명 1·2를 같게 맞춰 주세요.")
     if channel == "naver":
+        discounts = {option.effective_original_price - option.sale_price for option in options}
+        if len(discounts) > 1:
+            errors.append("네이버의 모든 옵션은 '정상가 - 판매가' 금액이 같아야 합니다.")
         if not setting.after_service_phone: errors.append("네이버 A/S 전화번호를 입력하세요.")
         if not setting.after_service_guide: errors.append("네이버 A/S 안내를 입력하세요.")
         if setting.origin_area_code == "04" and not setting.origin_area_content:
@@ -75,13 +113,14 @@ def _naver_upload_image(image):
 def publish_naver(product):
     setting = product.channel_settings.get(channel="naver")
     image_url = _naver_upload_image(product.image)
-    price = _price(product, "naver")
-    options = list(setting.selling_options.filter(active=True))
+    options = _active_options(setting)
+    price_plan = _naver_price_plan(options)
     option_combinations = []
-    for option in options:
+    for row in price_plan["rows"]:
+        option = row["option"]
         combination = {
             "optionName1": option.option_value_1, "stockQuantity": option.stock_quantity,
-            "price": max(0, int(option.sale_price) - price),
+            "price": row["original"] - price_plan["base_original"],
             "sellerManagerCode": option.seller_sku, "usable": True,
         }
         if option.option_name_2 and option.option_value_2:
@@ -94,7 +133,7 @@ def publish_naver(product):
         "statusType": setting.naver_origin_status, "saleType": "NEW", "leafCategoryId": setting.category_code,
         "name": setting.channel_product_name or product.name, "detailContent": product.detail_page_html,
         "images": {"representativeImage": {"url": image_url}, "optionalImages": []},
-        "salePrice": price, "stockQuantity": sum(option.stock_quantity for option in options),
+        "salePrice": price_plan["base_original"], "stockQuantity": sum(option.stock_quantity for option in options),
         "deliveryInfo": {"deliveryType": "DELIVERY", "deliveryAttributeType": "NORMAL",
                          "deliveryFee": {"deliveryFeeType": setting.delivery_fee_type, "baseFee": int(setting.delivery_fee)},
                          "claimDeliveryInfo": {"returnDeliveryFee": int(setting.return_fee), "exchangeDeliveryFee": int(setting.return_fee) * 2}},
@@ -115,7 +154,9 @@ def publish_naver(product):
                                 "plural": False,
                             },
                             "minorPurchasable": setting.minor_purchasable},
-        "customerBenefit": {},
+        "customerBenefit": ({"immediateDiscountPolicy": {"discountMethod": {
+            "value": price_plan["discount"], "unitType": "WON",
+        }}} if price_plan["discount"] else {}),
     }
     body = {"originProduct": origin, "smartstoreChannelProduct": {"naverShoppingRegistration": True,
              "channelProductName": setting.channel_product_name or product.name,
@@ -133,6 +174,7 @@ def publish_coupang(product, image_url):
     items = []
     for option in setting.selling_options.filter(active=True):
         sale_price = int(option.sale_price)
+        original_price = int(option.effective_original_price)
         option_values = [option.option_value_1] + ([option.option_value_2] if option.option_value_2 else [])
         option_attributes = [
             {"attributeTypeName": option.option_name_1, "attributeValueName": option.option_value_1, "exposed": "EXPOSED"}
@@ -144,7 +186,7 @@ def publish_coupang(product, image_url):
                 "exposed": "EXPOSED",
             })
         items.append({
-            "itemName": " / ".join(option_values), "originalPrice": sale_price, "salePrice": sale_price,
+            "itemName": " / ".join(option_values), "originalPrice": original_price, "salePrice": sale_price,
             "outboundShippingTimeDay": 2, "maximumBuyCount": max(1, option.stock_quantity), "unitCount": 1,
             "adultOnly": "EVERYONE", "taxType": "TAX", "parallelImported": "NOT_PARALLEL_IMPORTED",
             "overseasPurchased": "NOT_OVERSEAS_PURCHASED", "pccNeeded": False,

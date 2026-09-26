@@ -174,6 +174,7 @@ class MarketplaceReadOnlyTests(TestCase):
                 f"{prefix}-options-0-option_name_1": "색상" if channel == "naver" else "스타일",
                 f"{prefix}-options-0-option_value_1": "로즈골드" if channel == "naver" else "기본형",
                 f"{prefix}-options-0-option_name_2": "", f"{prefix}-options-0-option_value_2": "",
+                f"{prefix}-options-0-original_price": "220000" if channel == "naver" else "230000",
                 f"{prefix}-options-0-sale_price": "190000" if channel == "naver" else "205000",
                 f"{prefix}-options-0-stock_quantity": "12", f"{prefix}-options-0-active": "on",
                 f"{prefix}-options-0-sort_order": "0",
@@ -183,8 +184,10 @@ class MarketplaceReadOnlyTests(TestCase):
         naver = product.channel_settings.get(channel="naver").selling_options.get()
         coupang = product.channel_settings.get(channel="coupang").selling_options.get()
         self.assertEqual(naver.sale_price, Decimal("190000"))
+        self.assertEqual(naver.original_price, Decimal("220000"))
         self.assertEqual(naver.option_name_1, "색상")
         self.assertEqual(coupang.sale_price, Decimal("205000"))
+        self.assertEqual(coupang.original_price, Decimal("230000"))
         self.assertEqual(coupang.option_name_1, "스타일")
 
     def test_publish_payload_deep_merge_preserves_generated_fields(self):
@@ -229,6 +232,80 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertEqual(combination["optionName1"], "42cm")
         self.assertEqual(combination["sellerManagerCode"], "NAVER-CUSTOM-1")
         self.assertEqual(body["originProduct"]["salePrice"], 210000)
+
+    @patch("erp.marketplace_publish._json_request")
+    @patch("erp.marketplace_publish._naver_upload_image", return_value="https://example.com/product.jpg")
+    @patch("erp.marketplace_publish._naver_token", return_value="token")
+    def test_naver_publish_converts_full_prices_to_base_discount_and_option_delta(self, _token, _image, request_api):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from erp.marketplace_publish import publish_naver
+
+        product = OpenMarketProduct.objects.create(
+            code="NAVER-DISCOUNT", name="네이버 할인 상품",
+            image=SimpleUploadedFile("item.jpg", b"image"), detail_page_html="<p>상세</p>",
+        )
+        setting = OpenMarketChannelSetting.objects.create(product=product, channel="naver", category_code="50004168")
+        OpenMarketChannelOption.objects.create(
+            setting=setting, seller_sku="N-14K", option_name_1="주얼리 사이즈", option_value_1="14K",
+            original_price=349900, sale_price=179800, stock_quantity=10,
+        )
+        OpenMarketChannelOption.objects.create(
+            setting=setting, seller_sku="N-18K", option_name_1="주얼리 사이즈", option_value_1="18K",
+            original_price=449900, sale_price=279800, stock_quantity=5,
+        )
+        request_api.return_value = {"originProductNo": 1}
+
+        publish_naver(product)
+
+        origin = request_api.call_args.kwargs["body"]["originProduct"]
+        self.assertEqual(origin["salePrice"], 349900)
+        self.assertEqual(origin["customerBenefit"]["immediateDiscountPolicy"]["discountMethod"], {
+            "value": 170100, "unitType": "WON",
+        })
+        self.assertEqual([row["price"] for row in origin["detailAttribute"]["optionInfo"]["optionCombinations"]], [0, 100000])
+
+    def test_naver_readiness_blocks_different_discount_amounts_by_option(self):
+        from erp.marketplace_publish import publish_readiness
+
+        product = OpenMarketProduct.objects.create(
+            code="NAVER-BAD-DISCOUNT", name="할인 오류", workspace_status="approved",
+            target_channels=["naver"], detail_page_html="<p>상세</p>",
+        )
+        setting = OpenMarketChannelSetting.objects.create(product=product, channel="naver", category_code="1")
+        OpenMarketChannelOption.objects.create(
+            setting=setting, seller_sku="A", option_name_1="재질", option_value_1="14K",
+            original_price=300000, sale_price=200000,
+        )
+        OpenMarketChannelOption.objects.create(
+            setting=setting, seller_sku="B", option_name_1="재질", option_value_1="18K",
+            original_price=400000, sale_price=250000,
+        )
+        errors = publish_readiness(product, "naver")
+        self.assertTrue(any("정상가 - 판매가" in error for error in errors))
+
+    @patch.dict(os.environ, {
+        "COUPANG_VENDOR_ID": "A0001", "COUPANG_ACCESS_KEY": "access", "COUPANG_SECRET_KEY": "secret",
+    })
+    @patch("erp.marketplace_publish._json_request")
+    def test_coupang_publish_keeps_item_original_and_sale_prices(self, request_api):
+        from erp.marketplace_publish import publish_coupang
+
+        product = OpenMarketProduct.objects.create(code="COUPANG-PRICE", name="쿠팡 가격", detail_page_html="<p>상세</p>")
+        setting = OpenMarketChannelSetting.objects.create(
+            product=product, channel="coupang", category_code="71588",
+            outbound_location_code="123", return_center_code="456",
+        )
+        OpenMarketChannelOption.objects.create(
+            setting=setting, seller_sku="C-14K", option_name_1="사이즈", option_value_1="14K Gold",
+            original_price=349900, sale_price=178800,
+        )
+        request_api.return_value = {"data": 1}
+
+        publish_coupang(product, "https://example.com/item.jpg")
+
+        item = request_api.call_args.kwargs["body"]["items"][0]
+        self.assertEqual(item["originalPrice"], 349900)
+        self.assertEqual(item["salePrice"], 178800)
 
     def test_channel_sales_aggregates_order_based_net_sales(self):
         MarketplaceSettlement.objects.create(

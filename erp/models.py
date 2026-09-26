@@ -879,6 +879,10 @@ class OpenMarketChannelOption(models.Model):
     option_value_1 = models.CharField("옵션값 1", max_length=100)
     option_name_2 = models.CharField("옵션명 2", max_length=50, blank=True)
     option_value_2 = models.CharField("옵션값 2", max_length=100, blank=True)
+    original_price = models.DecimalField(
+        "정상가", max_digits=14, decimal_places=0, null=True, blank=True,
+        help_text="할인 전 정상가입니다. 비워 두면 판매가와 같게 전송합니다.",
+    )
     sale_price = models.DecimalField("채널 판매가", max_digits=14, decimal_places=0)
     stock_quantity = models.PositiveIntegerField("채널 재고", default=999)
     active = models.BooleanField("등록 사용", default=True)
@@ -892,6 +896,10 @@ class OpenMarketChannelOption(models.Model):
 
     def __str__(self):
         return f"{self.setting} / {self.option_value_1}"
+
+    @property
+    def effective_original_price(self):
+        return self.original_price if self.original_price is not None else self.sale_price
 
 
 class MarketplaceProduct(models.Model):
