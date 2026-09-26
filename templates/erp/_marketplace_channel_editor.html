@@ -1,52 +1,110 @@
 {% load erp_numbers %}
 <div class="workspace-channel-panel" data-workspace-panel="{{ channel_key }}" hidden>
   <section class="workspace-panel wide channel-panel-head {{ channel_key }}">
-    <header><div><small>{{ channel_label }}</small><b>{{ channel_label }} 등록 정보</b></div><span>다른 마켓과 독립 저장</span></header>
-    <p class="workspace-guide">{% if channel_key == 'naver' %}스마트스토어의 상품명·상태·배송·A/S 값을 설정합니다. 판매중지와 전시중지 상태로 먼저 등록합니다.{% else %}쿠팡의 상품명·카테고리·배송지 값을 설정합니다. 승인요청 전 상태로 먼저 등록합니다.{% endif %}</p>
-    <div class="workspace-fields channel-core-fields">
-      {{ channel_form.category_code.as_field_group }}{{ channel_form.channel_product_name.as_field_group }}
-      {% if channel_key == 'naver' %}{{ channel_form.naver_origin_status.as_field_group }}{{ channel_form.naver_channel_display_status.as_field_group }}{{ channel_form.after_service_phone.as_field_group }}{{ channel_form.after_service_guide.as_field_group }}{{ channel_form.origin_area_code.as_field_group }}{{ channel_form.origin_area_content.as_field_group }}{{ channel_form.minor_purchasable.as_field_group }}{% endif %}
-      {{ channel_form.delivery_method.as_field_group }}{{ channel_form.delivery_company_code.as_field_group }}{{ channel_form.outbound_location_code.as_field_group }}{{ channel_form.return_center_code.as_field_group }}{{ channel_form.delivery_fee_type.as_field_group }}{{ channel_form.delivery_fee.as_field_group }}{{ channel_form.return_fee.as_field_group }}
+    <header>
+      <div><small>{{ channel_label }}</small><b>{{ channel_label }} 등록 정보</b></div>
+      <span class="channel-independent">다른 마켓과 별도 저장</span>
+    </header>
+    <div class="channel-intro"><b>① 상품과 판매 상태</b><span>{% if channel_key == 'naver' %}스마트스토어에는 판매·전시 중지 상태로 먼저 등록합니다.{% else %}쿠팡에는 승인요청 전 상태로 먼저 등록합니다.{% endif %}</span></div>
+
+    <div class="channel-setting-groups">
+      <section class="channel-setting-group primary-group">
+        <h3>상품 기본정보</h3>
+        <div class="workspace-fields channel-product-fields">
+          {% include 'erp/_workspace_field.html' with field=channel_form.category_code label='카테고리 코드' %}
+          {% include 'erp/_workspace_field.html' with field=channel_form.channel_product_name label='채널 전용 상품명' %}
+          {% if channel_key == 'naver' %}
+            {% include 'erp/_workspace_field.html' with field=channel_form.naver_origin_status label='판매 상태' %}
+            {% include 'erp/_workspace_field.html' with field=channel_form.naver_channel_display_status label='전시 상태' %}
+          {% endif %}
+        </div>
+      </section>
+
+      {% if channel_key == 'naver' %}
+      <section class="channel-setting-group">
+        <h3>A/S · 원산지</h3>
+        <div class="workspace-fields channel-service-fields">
+          {% include 'erp/_workspace_field.html' with field=channel_form.after_service_phone label='A/S 전화번호' %}
+          {% include 'erp/_workspace_field.html' with field=channel_form.after_service_guide label='A/S 안내' wide=True %}
+          {% include 'erp/_workspace_field.html' with field=channel_form.origin_area_code label='원산지 구분' %}
+          {% include 'erp/_workspace_field.html' with field=channel_form.origin_area_content label='원산지 직접 입력' %}
+          {% include 'erp/_workspace_field.html' with field=channel_form.minor_purchasable label='미성년자 구매 가능' %}
+        </div>
+      </section>
+      {% endif %}
+
+      <section class="channel-setting-group delivery-group">
+        <h3>배송 · 반품</h3>
+        <div class="workspace-fields channel-delivery-fields">
+          {% include 'erp/_workspace_field.html' with field=channel_form.delivery_method label='배송 방식' %}
+          {% include 'erp/_workspace_field.html' with field=channel_form.delivery_company_code label='택배사 코드' %}
+          {% include 'erp/_workspace_field.html' with field=channel_form.outbound_location_code label='출고지 코드' %}
+          {% include 'erp/_workspace_field.html' with field=channel_form.return_center_code label='반품지 코드' %}
+          {% include 'erp/_workspace_field.html' with field=channel_form.delivery_fee_type label='배송비 유형' %}
+          {% include 'erp/_workspace_field.html' with field=channel_form.delivery_fee label='기본 배송비' %}
+          {% include 'erp/_workspace_field.html' with field=channel_form.return_fee label='반품 배송비' %}
+        </div>
+      </section>
     </div>
   </section>
 
-  <section class="workspace-panel wide">
-    <header><b>{{ channel_label }} 판매 옵션·가격</b><span>고객 노출 기준</span></header>
-    <p class="workspace-guide">{% if channel_key == 'naver' %}각 조합의 최종 정상가와 실제 판매가를 입력하세요. ERP가 네이버용 기본가·옵션 추가금·즉시할인액으로 자동 변환합니다. 모든 옵션의 할인액(정상가−판매가)은 같아야 합니다.{% else %}쿠팡은 옵션마다 정상가와 실제 판매가를 독립적으로 전송합니다. 정상가를 비우면 판매가와 동일하게 등록됩니다.{% endif %}</p>
+  <section class="workspace-panel wide option-editor-panel">
+    <header><div><small>② 옵션 구성</small><b>{{ channel_label }} 판매 옵션과 가격</b></div><span>고객 노출 기준</span></header>
+    <div class="option-help-box">
+      <b>입력 방법</b>
+      <span>{% if channel_key == 'naver' %}정상가와 실제 판매가를 입력하면 네이버용 기본가·추가금·즉시할인으로 자동 변환됩니다.{% else %}쿠팡은 각 옵션의 정상가와 실제 판매가를 그대로 독립 전송합니다.{% endif %}</span>
+    </div>
     {{ option_formset.management_form }}
     {% if option_formset.non_form_errors %}<div class="workspace-errors">{{ option_formset.non_form_errors }}</div>{% endif %}
+
+    <div class="option-group-builder" data-option-group-builder="{{ option_formset.prefix }}">
+      <div class="option-group-title"><b>고객에게 보일 옵션명</b><span>옵션명은 여기에서 한 번만 정하고 아래 표에는 조합별 옵션값만 입력합니다.</span></div>
+      <div class="option-group-inputs">
+        <label><span>첫 번째 옵션명 <em>*</em></span>{{ option_formset.0.option_name_1 }}{{ option_formset.0.option_name_1.errors }}<small>예: 주얼리 사이즈</small></label>
+        <label><span>두 번째 옵션명 <i>선택</i></span>{{ option_formset.0.option_name_2 }}{{ option_formset.0.option_name_2.errors }}<small>예: 색상 · 사용하지 않으면 비워 두세요.</small></label>
+      </div>
+    </div>
+
     <div class="workspace-option-table-wrap">
       <table class="workspace-option-table" data-option-formset="{{ option_formset.prefix }}">
-        <thead><tr><th>내부 원가 기준</th><th>판매자 SKU</th><th>옵션명 1</th><th>옵션값 1</th><th>옵션명 2</th><th>옵션값 2</th><th>정상가</th><th>실제 판매가</th><th>재고</th><th>사용</th><th>순서</th><th>삭제</th></tr></thead>
+        <thead><tr><th>No.</th><th>관리정보</th><th>첫 번째 옵션값<br><small>예: 14K(45cm)</small></th><th>두 번째 옵션값<br><small>예: 옐로우골드</small></th><th>정상가<br><small>할인 전</small></th><th>실제 판매가</th><th>재고</th><th>사용·순서</th><th>삭제</th></tr></thead>
         <tbody>
         {% for option_form in option_formset %}
           <tr class="workspace-option-row">
-            <td>{{ option_form.id }}{{ option_form.internal_variant }}{{ option_form.internal_variant.errors }}</td><td>{{ option_form.seller_sku }}{{ option_form.seller_sku.errors }}</td>
-            <td>{{ option_form.option_name_1 }}{{ option_form.option_name_1.errors }}</td><td>{{ option_form.option_value_1 }}{{ option_form.option_value_1.errors }}</td>
-            <td>{{ option_form.option_name_2 }}{{ option_form.option_name_2.errors }}</td><td>{{ option_form.option_value_2 }}{{ option_form.option_value_2.errors }}</td>
-            <td>{{ option_form.original_price }}{{ option_form.original_price.errors }}</td><td>{{ option_form.sale_price }}{{ option_form.sale_price.errors }}</td>
-            <td>{{ option_form.stock_quantity }}{{ option_form.stock_quantity.errors }}</td><td>{{ option_form.active }}{{ option_form.active.errors }}</td>
-            <td>{{ option_form.sort_order }}{{ option_form.sort_order.errors }}</td><td>{{ option_form.DELETE }}{{ option_form.DELETE.errors }}</td>
+            <td class="option-row-number">{{ forloop.counter }}</td>
+            <td class="option-management">{{ option_form.id }}<label>내부 원가 연결{{ option_form.internal_variant }}</label>{{ option_form.internal_variant.errors }}<label>판매자 SKU{{ option_form.seller_sku }}</label>{{ option_form.seller_sku.errors }}</td>
+            <td>{{ option_form.option_value_1 }}{{ option_form.option_value_1.errors }}{% if not forloop.first %}<span class="option-group-mirror">{{ option_form.option_name_1 }}</span>{% endif %}</td>
+            <td>{{ option_form.option_value_2 }}{{ option_form.option_value_2.errors }}{% if not forloop.first %}<span class="option-group-mirror">{{ option_form.option_name_2 }}</span>{% endif %}</td>
+            <td class="price-cell">{{ option_form.original_price }}<span>원</span>{{ option_form.original_price.errors }}</td>
+            <td class="price-cell sale-price-cell">{{ option_form.sale_price }}<span>원</span>{{ option_form.sale_price.errors }}</td>
+            <td>{{ option_form.stock_quantity }}{{ option_form.stock_quantity.errors }}</td>
+            <td class="option-controls"><label>{{ option_form.active }} 사용</label><label>순서 {{ option_form.sort_order }}</label>{{ option_form.active.errors }}{{ option_form.sort_order.errors }}</td>
+            <td class="delete-cell"><label>{{ option_form.DELETE }} 삭제</label>{{ option_form.DELETE.errors }}</td>
             {% if option_form.non_field_errors %}<td class="option-row-errors">{{ option_form.non_field_errors }}</td>{% endif %}
           </tr>
         {% endfor %}
         </tbody>
       </table>
     </div>
-    <template data-option-empty="{{ option_formset.prefix }}"><tr class="workspace-option-row"><td>{{ option_formset.empty_form.id }}{{ option_formset.empty_form.internal_variant }}</td><td>{{ option_formset.empty_form.seller_sku }}</td><td>{{ option_formset.empty_form.option_name_1 }}</td><td>{{ option_formset.empty_form.option_value_1 }}</td><td>{{ option_formset.empty_form.option_name_2 }}</td><td>{{ option_formset.empty_form.option_value_2 }}</td><td>{{ option_formset.empty_form.original_price }}</td><td>{{ option_formset.empty_form.sale_price }}</td><td>{{ option_formset.empty_form.stock_quantity }}</td><td>{{ option_formset.empty_form.active }}</td><td>{{ option_formset.empty_form.sort_order }}</td><td>{{ option_formset.empty_form.DELETE }}</td></tr></template>
-    <button type="button" class="workspace-add-option" data-add-option="{{ option_formset.prefix }}">＋ 판매 옵션 행 추가</button>
+    <template data-option-empty="{{ option_formset.prefix }}"><tr class="workspace-option-row"><td class="option-row-number"></td><td class="option-management">{{ option_formset.empty_form.id }}<label>내부 원가 연결{{ option_formset.empty_form.internal_variant }}</label><label>판매자 SKU{{ option_formset.empty_form.seller_sku }}</label></td><td>{{ option_formset.empty_form.option_value_1 }}<span class="option-group-mirror">{{ option_formset.empty_form.option_name_1 }}</span></td><td>{{ option_formset.empty_form.option_value_2 }}<span class="option-group-mirror">{{ option_formset.empty_form.option_name_2 }}</span></td><td class="price-cell">{{ option_formset.empty_form.original_price }}<span>원</span></td><td class="price-cell sale-price-cell">{{ option_formset.empty_form.sale_price }}<span>원</span></td><td>{{ option_formset.empty_form.stock_quantity }}</td><td class="option-controls"><label>{{ option_formset.empty_form.active }} 사용</label><label>순서 {{ option_formset.empty_form.sort_order }}</label></td><td class="delete-cell"><label>{{ option_formset.empty_form.DELETE }} 삭제</label></td></tr></template>
+    <button type="button" class="workspace-add-option" data-add-option="{{ option_formset.prefix }}">＋ 판매 옵션 조합 추가</button>
+    {% if channel_key == 'naver' %}<p class="naver-price-note">네이버는 한 상품에 즉시할인액 하나를 사용하므로 모든 조합의 ‘정상가 − 실제 판매가’가 같아야 합니다.</p>{% endif %}
   </section>
 
-  <section class="workspace-panel wide"><details class="workspace-advanced"><summary>상품정보고시 및 API 고급 설정</summary><p class="workspace-guide">카테고리에 맞는 상품정보고시와 추가 속성을 입력합니다. JSON 직접 입력은 고급 설정으로 접어 두었습니다.</p><div class="workspace-fields advanced-fields">{{ channel_form.notice_type.as_field_group }}{{ channel_form.notice_data.as_field_group }}{{ channel_form.extra_attributes.as_field_group }}</div></details></section>
+  <section class="workspace-panel wide advanced-panel"><details class="workspace-advanced"><summary><span>③ 상품정보고시 및 API 고급 설정</span><small>필요할 때만 열기</small></summary><p class="workspace-guide">카테고리에 맞는 상품정보고시와 추가 속성을 입력합니다.</p><div class="workspace-fields advanced-fields">{% include 'erp/_workspace_field.html' with field=channel_form.notice_type label='상품정보고시 유형' %}{% include 'erp/_workspace_field.html' with field=channel_form.notice_data label='상품정보고시 상세 JSON' %}{% include 'erp/_workspace_field.html' with field=channel_form.extra_attributes label='채널 추가 속성 JSON' %}</div></details></section>
 
-  <section class="workspace-panel wide">
-    <header><b>{{ channel_label }} 최종 확인 및 등록</b><span>저장된 정보로 외부 등록</span></header>
+  <section class="workspace-panel wide publish-panel">
+    <header><div><small>④ 최종 단계</small><b>{{ channel_label }} 확인 및 등록</b></div><span>저장된 정보로 외부 등록</span></header>
     <div class="workspace-publish-single">
-      <div class="test-publish-actions">{% if publish_info.test_listing %}<span>내부 테스트 생성됨</span><button type="submit" name="action" value="clear" formaction="{% url 'erp:marketplace_workspace_simulate' product.pk channel_key %}">테스트 삭제</button>{% else %}<button type="submit" formaction="{% url 'erp:marketplace_workspace_simulate' product.pk channel_key %}">내부 테스트 등록</button>{% endif %}</div>
-      {% if publish_info.setting.external_product_id %}<p class="publish-success">실제 등록 완료 · {{ publish_info.setting.external_product_id }}</p>{% endif %}
-      {% if publish_info.errors %}<p class="publish-blocked">등록 전 아래 정보를 확인하세요.</p><ul>{% for error in publish_info.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
-      <button type="submit" class="workspace-publish-button" formaction="{% url 'erp:marketplace_workspace_publish' product.pk channel_key %}" formmethod="post" {% if publish_info.errors %}disabled title="필수정보를 입력하고 저장해 주세요"{% else %}onclick="return confirm('저장된 정보로 {{ channel_label }}에 판매 전 상태의 상품을 등록할까요?')"{% endif %}>{% if channel_key == 'naver' %}네이버 판매중지 등록{% else %}쿠팡 승인요청 전 등록{% endif %}</button>
-      {% if publish_info.setting.last_upload_error %}<p class="publish-error"><b>이전 등록 시도 오류</b><br>{{ publish_info.setting.last_upload_error }}</p>{% endif %}
+      <div class="test-publish-actions"><div><b>내부 미리보기</b><span>외부 마켓에는 전송하지 않습니다.</span></div>{% if publish_info.test_listing %}<span class="test-ready">생성됨</span><button type="submit" name="action" value="clear" formaction="{% url 'erp:marketplace_workspace_simulate' product.pk channel_key %}">삭제</button>{% else %}<button type="submit" formaction="{% url 'erp:marketplace_workspace_simulate' product.pk channel_key %}">미리보기 만들기</button>{% endif %}</div>
+      {% if publish_info.setting.external_product_id %}
+        <div class="external-publish-state complete"><span>✓</span><div><b>외부 등록 완료</b><strong>상품번호 {{ publish_info.setting.external_product_id }}</strong><small>중복 등록을 막기 위해 새 등록 버튼이 잠겨 있습니다.</small></div></div>
+        <button type="button" class="workspace-publish-button" disabled>이미 등록된 상품</button>
+      {% else %}
+        {% if publish_info.errors %}<div class="publish-checklist"><b>등록 전에 확인할 항목</b><ul>{% for error in publish_info.errors %}<li>{{ error }}</li>{% endfor %}</ul></div>{% else %}<div class="external-publish-state ready"><span>✓</span><div><b>등록 준비 완료</b><small>입력정보를 저장한 뒤 외부 마켓에 전송할 수 있습니다.</small></div></div>{% endif %}
+        <button type="submit" class="workspace-publish-button" formaction="{% url 'erp:marketplace_workspace_publish' product.pk channel_key %}" formmethod="post" {% if publish_info.errors %}disabled title="필수정보를 입력하고 저장해 주세요"{% else %}onclick="return confirm('저장된 정보로 {{ channel_label }}에 판매 전 상태의 상품을 등록할까요?')"{% endif %}>{% if channel_key == 'naver' %}네이버 판매중지 등록{% else %}쿠팡 승인요청 전 등록{% endif %}</button>
+      {% endif %}
+      {% if publish_info.setting.last_upload_error %}<details class="publish-error"><summary>이전 등록 시도 오류 보기</summary><p>{{ publish_info.setting.last_upload_error }}</p></details>{% endif %}
     </div>
   </section>
 </div>

@@ -90,6 +90,13 @@ class OpenMarketChannelOptionForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         for field in self.fields.values():
             field.widget.attrs["class"] = "field"
+        self.fields["seller_sku"].widget.attrs["placeholder"] = "예: ORO-362-N-14K-Y"
+        self.fields["option_name_1"].widget.attrs["placeholder"] = "예: 주얼리 사이즈"
+        self.fields["option_value_1"].widget.attrs["placeholder"] = "예: 14K(45cm)"
+        self.fields["option_name_2"].widget.attrs["placeholder"] = "예: 색상"
+        self.fields["option_value_2"].widget.attrs["placeholder"] = "예: 옐로우골드"
+        self.fields["original_price"].widget.attrs["placeholder"] = "할인 전"
+        self.fields["sale_price"].widget.attrs["placeholder"] = "실제 판매가"
         if self.instance and self.instance.setting_id:
             self.fields["internal_variant"].queryset = self.instance.setting.product.variants.all()
 

@@ -106,6 +106,10 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertContains(response, "마켓별 등록 정보 입력")
         self.assertContains(response, "상품정보고시 상세")
         self.assertContains(response, "네이버 판매중지 등록")
+        self.assertContains(response, "고객에게 보일 옵션명")
+        self.assertContains(response, "첫 번째 옵션값")
+        self.assertContains(response, 'class="workspace-field"', html=False)
+        self.assertContains(response, 'class="option-group-builder"', html=False)
         self.assertContains(response, 'name="workspace-naver-category_code"', html=False)
         naver_setting = product.channel_settings.get(channel="naver")
         naver_setting.upload_status = "failed"
@@ -145,6 +149,20 @@ class MarketplaceReadOnlyTests(TestCase):
         naver_setting.refresh_from_db()
         self.assertEqual(naver_setting.upload_status, "")
         self.assertEqual(naver_setting.last_upload_error, "")
+
+    def test_workspace_registered_channel_shows_compact_completed_state(self):
+        product = OpenMarketProduct.objects.create(code="UPLOADED-001", name="등록 완료 상품")
+        setting = OpenMarketChannelSetting.objects.create(
+            product=product, channel="naver", external_product_id="13715393051", upload_status="uploaded",
+        )
+        OpenMarketChannelSetting.objects.create(product=product, channel="coupang")
+
+        response = self.client.get(reverse("erp:marketplace_workspace_edit", args=[product.pk]))
+
+        self.assertContains(response, "외부 등록 완료")
+        self.assertContains(response, "상품번호 13715393051")
+        self.assertContains(response, "이미 등록된 상품")
+        self.assertNotContains(response, "이미 등록된 상품입니다: 13715393051")
 
     def test_workspace_saves_independent_channel_options(self):
         product = OpenMarketProduct.objects.create(code="OPTION-001", name="채널 옵션 상품")
