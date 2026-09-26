@@ -22,6 +22,16 @@ class OpenMarketProductForm(forms.ModelForm):
                    "detail_page_html": forms.Textarea(attrs={"rows": 5})}
 
 
+class OpenMarketProductNameForm(forms.ModelForm):
+    class Meta:
+        model = OpenMarketProduct
+        fields = ("name",)
+        widgets = {"name": forms.TextInput(attrs={
+            "autofocus": True,
+            "placeholder": "예: 데일리 골드 목걸이",
+        })}
+
+
 class OpenMarketWorkspaceForm(forms.ModelForm):
     target_channels = forms.MultipleChoiceField(
         label="등록 대상 채널", choices=OpenMarketChannelSetting.CHANNEL_CHOICES,
@@ -30,7 +40,7 @@ class OpenMarketWorkspaceForm(forms.ModelForm):
 
     class Meta:
         model = OpenMarketProduct
-        fields = ("code", "name", "brand", "category", "model_name", "manufacturer", "origin_country",
+        fields = ("name", "brand", "category", "model_name", "manufacturer", "origin_country",
                   "default_weight", "pricing_material", "silver_price_per_gram", "base_labor_cost", "target_margin_rate", "naver_fee_rate",
                   "coupang_fee_rate", "description", "detail_page_html", "image", "target_channels",
                   "workspace_status", "ai_instruction", "image_instruction", "memo")
@@ -90,6 +100,8 @@ class OpenMarketChannelOptionForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         for field in self.fields.values():
             field.widget.attrs["class"] = "field"
+        self.fields["seller_sku"].required = False
+        self.fields["seller_sku"].help_text = "비워 두면 ERP가 채널별 관리번호를 자동 생성합니다."
         self.fields["seller_sku"].widget.attrs["placeholder"] = "예: ORO-362-N-14K-Y"
         self.fields["option_name_1"].widget.attrs["placeholder"] = "예: 주얼리 사이즈"
         self.fields["option_value_1"].widget.attrs["placeholder"] = "예: 14K(45cm)"
@@ -118,7 +130,7 @@ class BaseOpenMarketChannelOptionFormSet(BaseInlineFormSet):
             return
         rows = [form.cleaned_data for form in self.forms
                 if form.cleaned_data and not form.cleaned_data.get("DELETE")
-                and form.cleaned_data.get("seller_sku")]
+                and form.cleaned_data.get("option_value_1")]
         active_rows = [row for row in rows if row.get("active")]
         if not active_rows:
             return

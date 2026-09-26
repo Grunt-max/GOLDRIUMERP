@@ -1,8 +1,19 @@
 {% extends 'erp/base.html' %}
 {% block title %}GPT 상품등록 작업실{% endblock %}
 {% block content %}
-<section class="workspace-hero"><div><span>PRODUCT STUDIO</span><h2>상품등록 작업실</h2><p>상품 정보, 채널별 가격, 문구와 이미지 작업 지시를 한곳에서 준비하고 승인합니다.</p></div><a href="{% url 'erp:marketplace_workspace_create' %}">＋ 새 상품 초안</a></section>
+<section class="workspace-hero"><div><span>PRODUCT REGISTRY</span><h2>상품등록 작업실</h2><p>ERP 상품명을 기준으로 네이버·쿠팡 등록번호와 진행 상태를 한곳에서 관리합니다.</p></div><a href="{% url 'erp:marketplace_workspace_create' %}">＋ 상품명 등록</a></section>
 <section class="workspace-status-grid">{% for key,label in status_choices %}<a class="{% if selected_status == key %}active{% endif %}" href="?status={{ key }}"><small>{{ label }}</small><strong>{% if key == 'draft' %}{{ counts.draft }}{% elif key == 'review' %}{{ counts.review }}{% elif key == 'approved' %}{{ counts.approved }}{% else %}{{ counts.uploaded }}{% endif %}</strong></a>{% endfor %}</section>
-<form class="workspace-filter" method="get"><input name="q" value="{{ query }}" placeholder="상품번호 또는 상품명"><button>검색</button><a href="{% url 'erp:marketplace_workspace' %}">전체 보기</a></form>
-<section class="workspace-list">{% for product in products %}<a class="workspace-card" href="{% url 'erp:marketplace_workspace_edit' product.pk %}"><div class="workspace-thumb">{% if product.image %}<img src="{{ product.image.url }}" alt="">{% else %}<span>NO IMAGE</span>{% endif %}</div><div class="workspace-card-main"><small>{{ product.code }}</small><h3>{{ product.name }}</h3><p>{{ product.description|default:'상품 설명을 입력하세요.'|truncatechars:80 }}</p><div>{% for channel in product.target_channels %}<span class="channel-chip {{ channel }}">{% if channel == 'naver' %}네이버{% else %}쿠팡{% endif %}</span>{% empty %}<span class="channel-chip">채널 미선택</span>{% endfor %}</div></div><div class="workspace-card-state"><b class="state-{{ product.workspace_status }}">{{ product.get_workspace_status_display }}</b><small>{{ product.updated_at|date:'m-d H:i' }}</small><span>편집하기 →</span></div></a>{% empty %}<div class="workspace-empty"><b>아직 상품 초안이 없습니다.</b><p>첫 상품을 등록해 가격과 콘텐츠 작업을 시작하세요.</p></div>{% endfor %}</section>
+<form class="workspace-filter" method="get"><input name="q" value="{{ query }}" placeholder="상품명 또는 네이버·쿠팡 번호"><button>검색</button><a href="{% url 'erp:marketplace_workspace' %}">전체 보기</a></form>
+<section class="workspace-registry">
+  <header><div><b>ERP 상품 및 마켓 등록번호</b><span>상품명을 기준으로 각 마켓의 반환 번호를 연결합니다.</span></div><small>총 {{ rows|length }}개</small></header>
+  <div class="workspace-registry-table-wrap"><table><thead><tr><th>ERP 상품명</th><th>네이버 번호</th><th>쿠팡 번호</th><th>진행 상태</th><th></th></tr></thead><tbody>
+  {% for row in rows %}<tr>
+    <td><a class="registry-product" href="{% url 'erp:marketplace_workspace_edit' row.product.pk %}">{% if row.product.image %}<img src="{{ row.product.image.url }}" alt="">{% else %}<span class="registry-no-image">NO IMAGE</span>{% endif %}<span><b>{{ row.product.name }}</b><small>ERP 관리번호 {{ row.product.code }}</small></span></a></td>
+    <td>{% if row.naver and row.naver.display_product_id %}<strong class="registry-number naver">{{ row.naver.display_product_id }}</strong>{% if row.naver.external_channel_product_id and row.naver.external_product_id %}<small>원상품 {{ row.naver.external_product_id }}</small>{% endif %}{% else %}<span class="registry-empty">미등록</span>{% endif %}</td>
+    <td>{% if row.coupang and row.coupang.display_product_id %}<strong class="registry-number coupang">{{ row.coupang.display_product_id }}</strong>{% else %}<span class="registry-empty">미등록</span>{% endif %}</td>
+    <td><b class="state-{{ row.product.workspace_status }}">{{ row.product.get_workspace_status_display }}</b><small>{{ row.product.updated_at|date:'Y-m-d H:i' }}</small></td>
+    <td><a class="registry-edit" href="{% url 'erp:marketplace_workspace_edit' row.product.pk %}">등록정보 관리 →</a></td>
+  </tr>{% empty %}<tr><td colspan="5"><div class="workspace-empty"><b>아직 등록된 ERP 상품이 없습니다.</b><p>상품명을 먼저 등록해 주세요.</p></div></td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
 {% endblock %}

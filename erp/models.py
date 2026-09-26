@@ -1,3 +1,5 @@
+import re
+
 from django.db import models, transaction as db_transaction
 from django.conf import settings
 from django.core.validators import FileExtensionValidator
@@ -790,7 +792,9 @@ class OpenMarketChannelSetting(models.Model):
     )
     origin_area_content = models.CharField("원산지 직접 입력", max_length=200, blank=True)
     minor_purchasable = models.BooleanField("미성년자 구매 가능", default=True)
-    external_product_id = models.CharField("등록된 상품번호", max_length=120, blank=True)
+    external_product_id = models.CharField("마켓 대표 등록번호", max_length=120, blank=True)
+    external_channel_product_id = models.CharField("채널 노출 상품번호", max_length=120, blank=True)
+    upload_response = models.JSONField("최근 등록 응답", default=dict, blank=True)
     upload_status = models.CharField("업로드 상태", max_length=30, blank=True)
     last_upload_error = models.TextField("최근 업로드 오류", blank=True)
     last_uploaded_at = models.DateTimeField("최근 업로드 시각", null=True, blank=True)
@@ -801,6 +805,11 @@ class OpenMarketChannelSetting(models.Model):
 
     def __str__(self):
         return f"{self.product.code} / {self.get_channel_display()}"
+
+    @property
+    def display_product_id(self):
+        """Prefer the customer-facing number while retaining the platform master number."""
+        return self.external_channel_product_id or self.external_product_id
 
 
 class OpenMarketProductImage(models.Model):
@@ -874,7 +883,9 @@ class OpenMarketChannelOption(models.Model):
         OpenMarketVariant, on_delete=models.SET_NULL, null=True, blank=True,
         related_name="channel_options", verbose_name="연결 내부 원가 기준",
     )
-    seller_sku = models.CharField("채널 판매자 SKU", max_length=100)
+    seller_sku = models.CharField("채널 판매자 SKU", max_length=100, blank=True)
+    external_option_id = models.CharField("마켓 옵션 ID", max_length=120, blank=True)
+    external_item_id = models.CharField("마켓 판매자 옵션 ID", max_length=120, blank=True)
     option_name_1 = models.CharField("옵션명 1", max_length=50, default="선택")
     option_value_1 = models.CharField("옵션값 1", max_length=100)
     option_name_2 = models.CharField("옵션명 2", max_length=50, blank=True)
@@ -896,6 +907,22 @@ class OpenMarketChannelOption(models.Model):
 
     def __str__(self):
         return f"{self.setting} / {self.option_value_1}"
+
+    def save(self, *args, **kwargs):
+        if not self.seller_sku:
+            product_code = re.sub(r"[^0-9A-Za-z-]+", "-", self.setting.product.code).strip("-").upper()
+            product_code = product_code or f"ERP-{self.setting.product_id}"
+            channel_code = "N" if self.setting.channel == "naver" else "C"
+            base = f"{product_code[:88]}-{channel_code}"
+            for sequence in range(1, 10000):
+                candidate = f"{base}-{sequence:03d}"
+                duplicate = type(self).objects.filter(
+                    setting=self.setting, seller_sku=candidate,
+                ).exclude(pk=self.pk).exists()
+                if not duplicate:
+                    self.seller_sku = candidate
+                    break
+        super().save(*args, **kwargs)
 
     @property
     def effective_original_price(self):

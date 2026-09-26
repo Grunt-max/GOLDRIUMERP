@@ -1,6 +1,7 @@
 from decimal import Decimal
 import calendar
 import csv
+import uuid
 from datetime import date, timedelta
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -17,7 +18,7 @@ from django.utils.dateparse import parse_date
 from django.views.decorators.http import require_POST
 from .access import master_reauthentication_required
 from .gold_prices import collect_gold_prices
-from .forms import CompanyProfileForm, CustomerForm, DailyActivityForm, DailyActivityPlanForm, GoldLedgerEntryForm, GoldPriceForm, MaterialForm, OpenMarketChannelOptionFormSet, OpenMarketChannelSettingForm, OpenMarketProductForm, OpenMarketWorkspaceForm, OrderForm, ProductColorForm, ProductForm, PurchaseHeaderForm, PurchaseLineFormSet, PurchaseSupplierForm, SaleHeaderForm, SaleLineFormSet
+from .forms import CompanyProfileForm, CustomerForm, DailyActivityForm, DailyActivityPlanForm, GoldLedgerEntryForm, GoldPriceForm, MaterialForm, OpenMarketChannelOptionFormSet, OpenMarketChannelSettingForm, OpenMarketProductForm, OpenMarketProductNameForm, OpenMarketWorkspaceForm, OrderForm, ProductColorForm, ProductForm, PurchaseHeaderForm, PurchaseLineFormSet, PurchaseSupplierForm, SaleHeaderForm, SaleLineFormSet
 from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, Factory, GoldLedgerEntry, GoldPrice, MarketplaceOrder, MarketplaceOrderSyncState, MarketplaceProduct, MarketplaceSettlement, Material, OpenMarketChannelOffer, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketVariant, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleCustomerChangeLog, SaleItem, SaleTransaction, generate_transaction_no
 from .open_market_aliases import CHANNEL_ONLY_FIELDS, COMMON_FIELD_ALIASES
 from .marketplaces import MarketplaceError, channel_configuration, fetch_coupang_products, fetch_coupang_settlements, fetch_naver_products, fetch_naver_settlements
@@ -155,19 +156,48 @@ def marketplace_workspace(request):
     status = request.GET.get("status", "").strip()
     products = OpenMarketProduct.objects.prefetch_related("variants", "channel_settings").order_by("-updated_at")
     if query:
-        products = products.filter(Q(code__icontains=query) | Q(name__icontains=query))
+        products = products.filter(
+            Q(code__icontains=query) | Q(name__icontains=query)
+            | Q(channel_settings__external_product_id__icontains=query)
+            | Q(channel_settings__external_channel_product_id__icontains=query)
+        ).distinct()
     if status in dict(OpenMarketProduct.WORKSPACE_STATUS_CHOICES):
         products = products.filter(workspace_status=status)
     counts = {key: OpenMarketProduct.objects.filter(workspace_status=key).count()
               for key, _ in OpenMarketProduct.WORKSPACE_STATUS_CHOICES}
+    rows = []
+    for product in products:
+        settings = {setting.channel: setting for setting in product.channel_settings.all()}
+        rows.append({"product": product, "naver": settings.get("naver"), "coupang": settings.get("coupang")})
     return render(request, "erp/marketplace_workspace.html", {
-        "products": products, "query": query, "selected_status": status,
+        "products": products, "rows": rows, "query": query, "selected_status": status,
         "status_choices": OpenMarketProduct.WORKSPACE_STATUS_CHOICES, "counts": counts,
     })
 
 
 def marketplace_workspace_edit(request, pk=None):
-    product = get_object_or_404(OpenMarketProduct, pk=pk) if pk else None
+    if pk is None:
+        create_form = OpenMarketProductNameForm(request.POST or None)
+        if request.method == "POST" and create_form.is_valid():
+            with transaction.atomic():
+                product = OpenMarketProduct.objects.create(
+                    code=f"ERP-TEMP-{uuid.uuid4().hex[:12].upper()}",
+                    name=create_form.cleaned_data["name"],
+                )
+                generated_code = f"ERP-{product.pk:06d}"
+                if OpenMarketProduct.objects.filter(code=generated_code).exclude(pk=product.pk).exists():
+                    generated_code = f"{generated_code}-{uuid.uuid4().hex[:4].upper()}"
+                product.code = generated_code
+                product.save(update_fields=["code", "updated_at"])
+                OpenMarketChannelSetting.objects.bulk_create([
+                    OpenMarketChannelSetting(product=product, channel="naver"),
+                    OpenMarketChannelSetting(product=product, channel="coupang"),
+                ])
+            messages.success(request, "상품명을 등록했습니다. 이제 마켓별 등록 정보를 준비해 주세요.")
+            return redirect("erp:marketplace_workspace_edit", pk=product.pk)
+        return render(request, "erp/marketplace_workspace_create.html", {"form": create_form})
+
+    product = get_object_or_404(OpenMarketProduct, pk=pk)
     form = OpenMarketWorkspaceForm(request.POST or None, request.FILES or None, instance=product)
     channel_forms = {}
     channel_option_formsets = {}
@@ -254,6 +284,57 @@ def marketplace_workspace_generate(request, pk):
     return redirect("erp:marketplace_workspace_edit", pk=pk)
 
 
+def _marketplace_publish_ids(channel, result):
+    if not isinstance(result, dict):
+        return None, None
+    if channel == "naver":
+        origin_id = result.get("originProductNo")
+        channel_id = result.get("smartstoreChannelProductNo")
+        return origin_id or channel_id, channel_id
+    data = result.get("data")
+    if isinstance(data, dict):
+        return data.get("sellerProductId") or data.get("id"), None
+    return data, None
+
+
+def _save_returned_option_ids(setting, result):
+    """Store option identifiers when a create response includes them.
+
+    Coupang may leave vendorItemId empty until approval, so identifiers are only
+    filled when returned and existing values are never erased.
+    """
+    if not isinstance(result, dict):
+        return
+    if setting.channel == "naver":
+        items = (
+            result.get("originProduct", {}).get("detailAttribute", {})
+            .get("optionInfo", {}).get("optionCombinations", [])
+        )
+    else:
+        data = result.get("data")
+        items = data.get("items", []) if isinstance(data, dict) else result.get("items", [])
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        seller_sku = item.get("sellerManagerCode") or item.get("externalVendorSku")
+        if not seller_sku:
+            continue
+        option = setting.selling_options.filter(seller_sku=str(seller_sku)).first()
+        if not option:
+            continue
+        changed = []
+        external_option_id = item.get("vendorItemId") or item.get("optionCombinationId") or item.get("id")
+        external_item_id = item.get("sellerProductItemId")
+        if external_option_id is not None:
+            option.external_option_id = str(external_option_id)
+            changed.append("external_option_id")
+        if external_item_id is not None:
+            option.external_item_id = str(external_item_id)
+            changed.append("external_item_id")
+        if changed:
+            option.save(update_fields=changed)
+
+
 @require_POST
 @master_reauthentication_required
 def marketplace_workspace_publish(request, pk, channel):
@@ -269,8 +350,7 @@ def marketplace_workspace_publish(request, pk, channel):
         result = publish_naver(product) if channel == "naver" else publish_coupang(
             product, request.build_absolute_uri(product.image.url)
         )
-        external_id = (result.get("originProductNo") or result.get("smartstoreChannelProductNo")
-                       if channel == "naver" else result.get("data"))
+        external_id, channel_product_id = _marketplace_publish_ids(channel, result)
         if not external_id:
             raise MarketplaceError(f"등록 응답에서 상품번호를 찾지 못했습니다: {str(result)[:500]}")
     except (MarketplaceError, ValueError, TypeError) as exc:
@@ -280,10 +360,16 @@ def marketplace_workspace_publish(request, pk, channel):
         messages.error(request, f"{setting.get_channel_display()} 등록 실패: {exc}")
         return redirect("erp:marketplace_workspace_edit", pk=pk)
     setting.external_product_id = str(external_id)
+    setting.external_channel_product_id = str(channel_product_id or "")
+    setting.upload_response = result
     setting.upload_status = "uploaded"
     setting.last_upload_error = ""
     setting.last_uploaded_at = timezone.now()
-    setting.save(update_fields=["external_product_id", "upload_status", "last_upload_error", "last_uploaded_at"])
+    setting.save(update_fields=[
+        "external_product_id", "external_channel_product_id", "upload_response",
+        "upload_status", "last_upload_error", "last_uploaded_at",
+    ])
+    _save_returned_option_ids(setting, result)
     target_settings = product.channel_settings.filter(channel__in=product.target_channels)
     if target_settings.exists() and not target_settings.exclude(upload_status="uploaded").exists():
         product.workspace_status = "uploaded"

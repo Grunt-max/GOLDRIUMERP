@@ -25,37 +25,31 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertContains(response, "읽기 전용")
         self.assertContains(response, "판매량과 매출은 주문 API 연결 후 추가됩니다")
 
-    def test_workspace_creates_product_channels_and_default_variants(self):
-        response = self.client.post(reverse("erp:marketplace_workspace_create"), {
-            "code": "STUDIO-001", "name": "GPT 목걸이", "brand": "골드리움",
-            "origin_country": "대한민국", "pricing_material": "gold", "silver_price_per_gram": "0",
-            "base_labor_cost": "20000", "target_margin_rate": "30",
-            "naver_fee_rate": "6", "coupang_fee_rate": "11", "target_channels": ["naver", "coupang"],
-            "workspace_status": "review", "ai_instruction": "선물용으로 작성",
-        })
-        product = OpenMarketProduct.objects.get(code="STUDIO-001")
+    def test_workspace_creates_erp_product_from_name_only(self):
+        response = self.client.post(reverse("erp:marketplace_workspace_create"), {"name": "GPT 목걸이"})
+        product = OpenMarketProduct.objects.get(name="GPT 목걸이")
         self.assertRedirects(response, reverse("erp:marketplace_workspace_edit", args=[product.pk]))
-        self.assertEqual(product.workspace_status, "review")
-        self.assertEqual(product.target_channels, ["naver", "coupang"])
-        self.assertEqual(product.variants.count(), 4)
+        self.assertEqual(product.code, f"ERP-{product.pk:06d}")
+        self.assertEqual(product.workspace_status, "draft")
+        self.assertEqual(product.target_channels, [])
+        self.assertEqual(product.variants.count(), 0)
         self.assertEqual(set(product.channel_settings.values_list("channel", flat=True)), {"naver", "coupang"})
         page = self.client.get(reverse("erp:marketplace_workspace"))
         self.assertContains(page, "GPT 목걸이")
+        self.assertContains(page, "ERP 상품 및 마켓 등록번호")
         edit_page = self.client.get(reverse("erp:marketplace_workspace_edit", args=[product.pk]))
         self.assertEqual(edit_page.status_code, 200)
         self.assertContains(edit_page, "GPT 콘텐츠 준비")
 
     def test_workspace_silver_product_uses_silver_weight_cost(self):
-        response = self.client.post(reverse("erp:marketplace_workspace_create"), {
-            "code": "SILVER-001", "name": "실버 목걸이", "origin_country": "대한민국",
-            "pricing_material": "silver", "default_weight": "10", "silver_price_per_gram": "1500",
-            "base_labor_cost": "20000", "target_margin_rate": "30", "naver_fee_rate": "6",
-            "coupang_fee_rate": "11", "target_channels": ["naver"], "workspace_status": "draft",
-        })
-        product = OpenMarketProduct.objects.get(code="SILVER-001")
-        self.assertRedirects(response, reverse("erp:marketplace_workspace_edit", args=[product.pk]))
-        self.assertEqual(list(product.variants.values_list("base_variant", flat=True)), ["S925"])
-        price = product.variants.get().cost_and_price("naver")
+        product = OpenMarketProduct.objects.create(
+            code="SILVER-001", name="실버 목걸이", origin_country="대한민국",
+            pricing_material="silver", default_weight=Decimal("10"), silver_price_per_gram=Decimal("1500"),
+            base_labor_cost=Decimal("20000"), target_margin_rate=Decimal("30"), naver_fee_rate=Decimal("6"),
+            coupang_fee_rate=Decimal("11"), target_channels=["naver"], workspace_status="draft",
+        )
+        variant = OpenMarketVariant.objects.create(product=product, sku="SILVER-001-S925", base_variant="S925")
+        price = variant.cost_and_price("naver")
         self.assertEqual(price["gold_cost"], Decimal("15000"))
         self.assertEqual(price["total_cost"], Decimal("35000"))
 
@@ -163,6 +157,78 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertContains(response, "상품번호 13715393051")
         self.assertContains(response, "이미 등록된 상품")
         self.assertNotContains(response, "이미 등록된 상품입니다: 13715393051")
+
+    def test_workspace_registry_shows_returned_channel_numbers(self):
+        product = OpenMarketProduct.objects.create(code="REGISTRY-001", name="번호 관리 상품")
+        OpenMarketChannelSetting.objects.create(
+            product=product, channel="naver", external_product_id="90001",
+            external_channel_product_id="50001", upload_status="uploaded",
+        )
+        OpenMarketChannelSetting.objects.create(
+            product=product, channel="coupang", external_product_id="70001", upload_status="uploaded",
+        )
+
+        response = self.client.get(reverse("erp:marketplace_workspace"))
+
+        self.assertContains(response, "번호 관리 상품")
+        self.assertContains(response, "50001")
+        self.assertContains(response, "원상품 90001")
+        self.assertContains(response, "70001")
+
+    def test_channel_option_generates_seller_sku_when_left_blank(self):
+        product = OpenMarketProduct.objects.create(code="AUTO-001", name="자동 SKU 상품")
+        setting = OpenMarketChannelSetting.objects.create(product=product, channel="naver")
+
+        option = OpenMarketChannelOption.objects.create(
+            setting=setting, option_name_1="색상", option_value_1="옐로우골드", sale_price=100000,
+        )
+
+        self.assertEqual(option.seller_sku, "AUTO-001-N-001")
+
+    @patch("erp.views.publish_naver")
+    def test_publish_saves_naver_origin_channel_and_option_ids(self, publish_naver):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        product = OpenMarketProduct.objects.create(
+            code="RETURN-001", name="반환번호 상품", workspace_status="approved",
+            target_channels=["naver"], image=SimpleUploadedFile("item.jpg", b"image"),
+            detail_page_html="<p>상세</p>",
+        )
+        setting = OpenMarketChannelSetting.objects.create(
+            product=product, channel="naver", category_code="50004168",
+            after_service_phone="02-1234-5678", after_service_guide="판매자에게 문의",
+        )
+        option = OpenMarketChannelOption.objects.create(
+            setting=setting, seller_sku="RETURN-001-N-001", option_name_1="색상",
+            option_value_1="옐로우골드", sale_price=150000,
+        )
+        publish_naver.return_value = {
+            "originProductNo": 90001,
+            "smartstoreChannelProductNo": 50001,
+            "originProduct": {"detailAttribute": {"optionInfo": {"optionCombinations": [{
+                "id": 30001, "sellerManagerCode": "RETURN-001-N-001",
+            }]}}},
+        }
+
+        response = self.client.post(reverse(
+            "erp:marketplace_workspace_publish", args=[product.pk, "naver"],
+        ))
+
+        self.assertRedirects(response, reverse("erp:marketplace_workspace_edit", args=[product.pk]))
+        setting.refresh_from_db()
+        option.refresh_from_db()
+        self.assertEqual(setting.external_product_id, "90001")
+        self.assertEqual(setting.external_channel_product_id, "50001")
+        self.assertEqual(setting.upload_response["originProductNo"], 90001)
+        self.assertEqual(option.external_option_id, "30001")
+
+    def test_coupang_publish_id_accepts_object_response(self):
+        from erp.views import _marketplace_publish_ids
+
+        self.assertEqual(
+            _marketplace_publish_ids("coupang", {"data": {"sellerProductId": 70001}}),
+            (70001, None),
+        )
 
     def test_workspace_saves_independent_channel_options(self):
         product = OpenMarketProduct.objects.create(code="OPTION-001", name="채널 옵션 상품")

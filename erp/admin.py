@@ -143,9 +143,9 @@ class OpenMarketChannelOfferAdmin(admin.ModelAdmin):
 
 @admin.register(OpenMarketChannelOption)
 class OpenMarketChannelOptionAdmin(admin.ModelAdmin):
-    list_display = ("setting", "seller_sku", "option_value_1", "option_value_2", "original_price", "sale_price", "stock_quantity", "active")
+    list_display = ("setting", "seller_sku", "external_option_id", "option_value_1", "option_value_2", "original_price", "sale_price", "stock_quantity", "active")
     list_filter = ("setting__channel", "active")
-    search_fields = ("setting__product__code", "setting__product__name", "seller_sku", "option_value_1", "option_value_2")
+    search_fields = ("setting__product__code", "setting__product__name", "seller_sku", "external_option_id", "external_item_id", "option_value_1", "option_value_2")
 
 
 @admin.register(OpenMarketMatchCandidate)
