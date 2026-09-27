@@ -52,8 +52,15 @@
     <header><div><small>② 옵션 구성</small><b>{{ channel_label }} 판매 옵션과 가격</b></div><span>고객 노출 기준</span></header>
     <div class="option-help-box">
       <b>입력 방법</b>
-      <span>{% if channel_key == 'naver' %}정상가와 실제 판매가를 입력하면 네이버용 기본가·추가금·즉시할인으로 자동 변환됩니다.{% else %}쿠팡은 각 옵션의 정상가와 실제 판매가를 그대로 독립 전송합니다.{% endif %}</span>
+      <span>{% if channel_key == 'naver' %}<strong>할인 전 가격</strong>은 아래 ‘할인 전 가격(정상가)’ 칸에, 고객이 결제할 가격은 ‘실제 판매가’ 칸에 입력하세요. ERP가 네이버용 기본가·옵션 추가금·즉시할인으로 자동 변환합니다.{% else %}쿠팡은 각 옵션의 할인 전 가격과 실제 판매가를 그대로 독립 전송합니다.{% endif %}</span>
     </div>
+    {% if channel_key == 'naver' %}
+    <div class="naver-option-price-guide" data-naver-price-guide="{{ option_formset.prefix }}">
+      <div><small>네이버 기본 판매가(할인 전)</small><b data-naver-base-price>가격 입력 대기</b></div>
+      <div><small>허용 옵션 추가금</small><b data-naver-price-range>가격 입력 후 자동 계산</b></div>
+      <p>가장 낮은 할인 전 가격이 기본 판매가가 되며, 그 옵션이 추가금 0원 기준 옵션으로 등록됩니다.</p>
+    </div>
+    {% endif %}
     {{ option_formset.management_form }}
     {% if option_formset.non_form_errors %}<div class="workspace-errors">{{ option_formset.non_form_errors }}</div>{% endif %}
 
@@ -67,7 +74,7 @@
 
     <div class="workspace-option-table-wrap">
       <table class="workspace-option-table" data-option-formset="{{ option_formset.prefix }}">
-        <thead><tr><th>No.</th><th>관리정보</th><th>첫 번째 옵션값<br><small>예: 14K(45cm)</small></th><th>두 번째 옵션값<br><small>예: 옐로우골드</small></th><th>정상가<br><small>할인 전</small></th><th>실제 판매가</th><th>재고</th><th>사용·순서</th><th>삭제</th></tr></thead>
+        <thead><tr><th>No.</th><th>관리정보</th><th>첫 번째 옵션값<br><small>예: 14K(45cm)</small></th><th>두 번째 옵션값<br><small>예: 옐로우골드</small></th><th>할인 전 가격<br><small>정상가</small></th><th>실제 판매가<br><small>즉시할인 후</small></th><th>재고</th><th>사용·순서</th><th>삭제</th></tr></thead>
         <tbody>
         {% for option_form in option_formset %}
           <tr class="workspace-option-row">
@@ -88,10 +95,42 @@
     </div>
     <template data-option-empty="{{ option_formset.prefix }}"><tr class="workspace-option-row"><td class="option-row-number"></td><td class="option-management">{{ option_formset.empty_form.id }}<label>내부 원가 연결{{ option_formset.empty_form.internal_variant }}</label><label>판매자 SKU <small>비우면 자동</small>{{ option_formset.empty_form.seller_sku }}</label></td><td>{{ option_formset.empty_form.option_value_1 }}<span class="option-group-mirror">{{ option_formset.empty_form.option_name_1 }}</span></td><td>{{ option_formset.empty_form.option_value_2 }}<span class="option-group-mirror">{{ option_formset.empty_form.option_name_2 }}</span></td><td class="price-cell">{{ option_formset.empty_form.original_price }}<span>원</span></td><td class="price-cell sale-price-cell">{{ option_formset.empty_form.sale_price }}<span>원</span></td><td>{{ option_formset.empty_form.stock_quantity }}</td><td class="option-controls"><label>{{ option_formset.empty_form.active }} 사용</label><label>순서 {{ option_formset.empty_form.sort_order }}</label></td><td class="delete-cell"><label>{{ option_formset.empty_form.DELETE }} 삭제</label></td></tr></template>
     <button type="button" class="workspace-add-option" data-add-option="{{ option_formset.prefix }}">＋ 판매 옵션 조합 추가</button>
-    {% if channel_key == 'naver' %}<p class="naver-price-note">네이버는 한 상품에 즉시할인액 하나를 사용하므로 모든 조합의 ‘정상가 − 실제 판매가’가 같아야 합니다.</p>{% endif %}
+    {% if channel_key == 'naver' %}<p class="naver-price-note">네이버는 한 상품에 즉시할인액 하나를 사용하므로 모든 조합의 ‘할인 전 가격 − 실제 판매가’가 같아야 합니다.</p>{% endif %}
   </section>
 
-  <section class="workspace-panel wide advanced-panel"><details class="workspace-advanced"><summary><span>③ 상품정보고시 및 API 고급 설정</span><small>필요할 때만 열기</small></summary><p class="workspace-guide">카테고리에 맞는 상품정보고시와 추가 속성을 입력합니다.</p><div class="workspace-fields advanced-fields">{% include 'erp/_workspace_field.html' with field=channel_form.notice_type label='상품정보고시 유형' %}{% include 'erp/_workspace_field.html' with field=channel_form.notice_data label='상품정보고시 상세 JSON' %}{% include 'erp/_workspace_field.html' with field=channel_form.extra_attributes label='채널 추가 속성 JSON' %}</div></details></section>
+  {% if channel_key == 'naver' %}
+  <section class="workspace-panel wide notice-editor-panel">
+    <header><div><small>③ 상품정보고시</small><b>귀금속·보석·시계류 정보</b></div><span>네이버 공식 항목</span></header>
+    <p class="workspace-guide">화면에는 한글로 표시하고 저장·전송할 때 네이버 공식 JSON으로 자동 변환합니다. 밴드 재질과 제조국은 해당할 때만 입력하세요.</p>
+    <div class="workspace-fields notice-type-field">{% include 'erp/_workspace_field.html' with field=channel_form.notice_type label='상품정보고시 유형' %}</div>
+    <div class="notice-form-groups">
+      <section><h3>제품 정보</h3><div class="workspace-fields notice-fields">
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_material %}
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_purity %}
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_weight %}
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_size %}
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_manufacturer %}
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_producer %}
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_band_material %}
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_provide_warranty %}
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_specification wide=True %}
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_caution wide=True %}
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_warranty_policy wide=True %}
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_after_service_director wide=True %}
+      </div></section>
+      <section><h3>교환·반품·보상 안내</h3><div class="workspace-fields notice-policy-fields">
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_return_cost_reason %}
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_no_refund_reason %}
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_quality_assurance_standard %}
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_compensation_procedure %}
+        {% include 'erp/_workspace_field.html' with field=channel_form.notice_trouble_shooting_contents %}
+      </div></section>
+    </div>
+    <details class="workspace-advanced notice-raw-json"><summary><span>API 원문 JSON 및 추가 속성</span><small>고급 수정</small></summary><p class="workspace-guide">지원하지 않는 신규 API 필드가 있을 때만 원문을 수정하세요. 한글 입력값이 공식 영문 키로 병합됩니다.</p><div class="workspace-fields raw-json-fields">{% include 'erp/_workspace_field.html' with field=channel_form.notice_data label='상품정보고시 원문 JSON' %}{% include 'erp/_workspace_field.html' with field=channel_form.extra_attributes label='채널 추가 속성 JSON' %}</div></details>
+  </section>
+  {% else %}
+  <section class="workspace-panel wide advanced-panel"><details class="workspace-advanced"><summary><span>③ 상품정보고시 및 API 고급 설정</span><small>필요할 때만 열기</small></summary><p class="workspace-guide">쿠팡 카테고리에 맞는 상품정보고시와 추가 속성을 입력합니다.</p><div class="workspace-fields advanced-fields">{% include 'erp/_workspace_field.html' with field=channel_form.notice_type label='상품정보고시 유형' %}{% include 'erp/_workspace_field.html' with field=channel_form.notice_data label='상품정보고시 상세 JSON' %}{% include 'erp/_workspace_field.html' with field=channel_form.extra_attributes label='채널 추가 속성 JSON' %}</div></details></section>
+  {% endif %}
 
   <section class="workspace-panel wide publish-panel">
     <header><div><small>④ 최종 단계</small><b>{{ channel_label }} 확인 및 등록</b></div><span>저장된 정보로 외부 등록</span></header>

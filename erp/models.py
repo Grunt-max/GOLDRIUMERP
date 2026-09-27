@@ -1039,12 +1039,28 @@ class MarketplaceProduct(models.Model):
 
     @property
     def option_price_limit(self):
-        return self.sale_price * Decimal("0.5") if self.channel == "naver" and self.sale_price is not None else None
+        if self.channel != "naver" or self.sale_price is None:
+            return None
+        return max(abs(self.option_price_minimum), abs(self.option_price_maximum))
+
+    @property
+    def option_price_minimum(self):
+        if self.channel != "naver" or self.sale_price is None:
+            return None
+        if self.sale_price < Decimal("2000"):
+            return Decimal("0")
+        return -(self.sale_price * Decimal("0.5"))
+
+    @property
+    def option_price_maximum(self):
+        if self.channel != "naver" or self.sale_price is None:
+            return None
+        return self.sale_price if self.sale_price < Decimal("10000") else self.sale_price * Decimal("0.5")
 
     @property
     def option_price_rule_ok(self):
-        limit = self.option_price_limit
-        return limit is None or all(abs(price) <= limit for price in self.option_additional_prices)
+        minimum, maximum = self.option_price_minimum, self.option_price_maximum
+        return minimum is None or all(minimum <= price <= maximum for price in self.option_additional_prices)
 
 
 class MarketplaceOrder(models.Model):

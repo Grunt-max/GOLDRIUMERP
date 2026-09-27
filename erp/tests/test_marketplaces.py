@@ -102,6 +102,10 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertContains(response, "네이버 판매중지 등록")
         self.assertContains(response, "고객에게 보일 옵션명")
         self.assertContains(response, "첫 번째 옵션값")
+        self.assertContains(response, "할인 전 가격")
+        self.assertContains(response, "귀금속·보석·시계류 정보")
+        self.assertContains(response, "A/S 책임자와 전화번호")
+        self.assertContains(response, "허용 옵션 추가금")
         self.assertContains(response, 'class="workspace-field"', html=False)
         self.assertContains(response, 'class="option-group-builder"', html=False)
         self.assertContains(response, 'name="workspace-naver-category_code"', html=False)
@@ -596,6 +600,55 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertContains(detail, "반지 호수 / 10호")
         self.assertContains(detail, "반지 호수 / 11호")
         self.assertContains(detail, "중지")
+
+    def test_naver_jewellery_notice_uses_korean_fields_and_preserves_unknown_json(self):
+        from erp.forms import OpenMarketChannelSettingForm
+
+        product = OpenMarketProduct.objects.create(code="NOTICE-001", name="고시 한글화")
+        setting = OpenMarketChannelSetting.objects.create(
+            product=product, channel="naver",
+            notice_data={"productInfoProvidedNoticeType": "JEWELLERY", "jewellery": {
+                "material": "14K 골드", "legacyField": "보존",
+            }},
+        )
+        data = {
+            "category_code": "50004168", "channel_product_name": "고시 테스트",
+            "delivery_method": "DELIVERY", "delivery_company_code": "",
+            "outbound_location_code": "", "return_center_code": "",
+            "delivery_fee_type": "FREE", "delivery_fee": "0", "return_fee": "3000",
+            "notice_type": "JEWELLERY",
+            "notice_data": '{"productInfoProvidedNoticeType":"JEWELLERY","jewellery":{"legacyField":"보존"}}',
+            "extra_attributes": "{}", "naver_origin_status": "SUSPENSION",
+            "naver_channel_display_status": "SUSPENSION", "after_service_phone": "02-1234-5678",
+            "after_service_guide": "고객센터 문의", "origin_area_code": "00",
+            "origin_area_content": "", "minor_purchasable": "on",
+            "notice_return_cost_reason": "0", "notice_no_refund_reason": "1",
+            "notice_quality_assurance_standard": "0", "notice_compensation_procedure": "0",
+            "notice_trouble_shooting_contents": "0", "notice_material": "18K 골드",
+            "notice_purity": "75%", "notice_band_material": "", "notice_weight": "2.1g",
+            "notice_manufacturer": "골드리움", "notice_producer": "대한민국",
+            "notice_size": "45cm", "notice_caution": "충격 주의",
+            "notice_specification": "18K 목걸이", "notice_provide_warranty": "제공",
+            "notice_warranty_policy": "소비자분쟁해결기준", "notice_after_service_director": "골드리움 02-1234-5678",
+        }
+        form = OpenMarketChannelSettingForm(data=data, instance=setting)
+        self.assertTrue(form.is_valid(), form.errors)
+        saved = form.save()
+        jewellery = saved.notice_data["jewellery"]
+        self.assertEqual(jewellery["material"], "18K 골드")
+        self.assertEqual(jewellery["purity"], "75%")
+        self.assertEqual(jewellery["returnCostReason"], "0")
+        self.assertEqual(jewellery["legacyField"], "보존")
+        self.assertNotIn("bandMaterial", jewellery)
+
+    def test_naver_option_price_bounds_follow_official_price_tiers(self):
+        from erp.marketplace_rules import naver_option_price_bounds, naver_option_price_error
+
+        self.assertEqual(naver_option_price_bounds(1500), (Decimal("0"), Decimal("1500")))
+        self.assertEqual(naver_option_price_bounds(5000), (Decimal("-2500.0"), Decimal("5000")))
+        self.assertEqual(naver_option_price_bounds(10000), (Decimal("-5000.0"), Decimal("5000.0")))
+        self.assertEqual(naver_option_price_error([10000, 15000]), "")
+        self.assertIn("까지만 입력", naver_option_price_error([10000, 16000]))
 
     @patch.dict(os.environ, {"COUPANG_ACCESS_KEY": "access", "COUPANG_SECRET_KEY": "secret", "COUPANG_VENDOR_ID": "A00012345"})
     @patch("erp.marketplaces.time.sleep")

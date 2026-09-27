@@ -500,7 +500,8 @@ def marketplace_product_detail(request, pk):
         origin = product.raw_data.get("originProduct", {})
         detail = origin.get("detailAttribute", {}) if isinstance(origin, dict) else {}
         option_info = detail.get("optionInfo", {}) if isinstance(detail, dict) else {}
-        limit = product.option_price_limit
+        minimum, maximum = product.option_price_minimum, product.option_price_maximum
+        group_names = option_info.get("optionCombinationGroupNames", {}) if isinstance(option_info, dict) else {}
         option_sources = (
             ("optionCombinations", "조합형"), ("optionSimple", "단독형"),
             ("optionCustom", "직접입력형"), ("optionStandards", "표준형"),
@@ -513,6 +514,12 @@ def marketplace_product_detail(request, pk):
                     continue
                 additional = product._market_decimal(option.get("price")) or Decimal("0")
                 names = [str(option.get(f"optionName{number}", "")).strip() for number in range(1, 5)]
+                labelled_names = []
+                for number, value in enumerate(names, start=1):
+                    if not value:
+                        continue
+                    label = str(group_names.get(f"optionGroupName{number}") or "").strip()
+                    labelled_names.append(f"{label}: {value}" if label else value)
                 if not any(names):
                     names = [
                         str(option.get("groupName") or option.get("optionGroupName") or "").strip(),
@@ -521,10 +528,13 @@ def marketplace_product_detail(request, pk):
                 options.append({
                     "number": len(options) + 1, "type": type_label, "external_id": option.get("id"),
                     "name": " / ".join(name for name in names if name) or f"옵션 {len(options) + 1}",
+                    "attributes": " / ".join(labelled_names),
                     "additional_price": additional,
                     "display_price": product.display_price + additional if product.display_price is not None else None,
+                    "original_price": product.sale_price + additional if product.sale_price is not None else None,
                     "stock": option.get("stockQuantity"), "usable": option.get("usable", True),
-                    "rule_ok": limit is None or abs(additional) <= limit,
+                    "status": "사용" if option.get("usable", True) else "중지",
+                    "rule_ok": minimum is None or minimum <= additional <= maximum,
                 })
     elif product.channel == "coupang":
         base_price = product.display_price
@@ -664,7 +674,7 @@ def _sync_normalized_offers(listing, channel, options):
             if not option_name:
                 option_name = " / ".join(str(option.get(key) or "").strip() for key in ("groupName", "name") if option.get(key))
             additional = listing._market_decimal(option.get("price")) or Decimal("0")
-            original_price = listing.sale_price
+            original_price = listing.sale_price + additional if listing.sale_price is not None else None
             sale_price = base_price + additional if base_price is not None else None
             status = "SALE" if option.get("usable", True) else "SUSPENSION"
         else:

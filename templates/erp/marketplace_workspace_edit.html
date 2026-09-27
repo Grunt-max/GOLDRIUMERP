@@ -61,7 +61,39 @@
     total.value = index + 1;
     syncOptionGroups(prefix);
     tableBody.querySelectorAll('.option-row-number').forEach((cell, rowIndex) => cell.textContent = rowIndex + 1);
+    updateNaverPriceGuide(prefix);
   }));
+  const formatWon = value => `${Math.round(value).toLocaleString('ko-KR')}원`;
+  const updateNaverPriceGuide = prefix => {
+    const guide = document.querySelector(`[data-naver-price-guide="${prefix}"]`);
+    if (!guide) return;
+    const rows = [...document.querySelectorAll(`table[data-option-formset="${prefix}"] .workspace-option-row`)];
+    const prices = rows.map(row => {
+      const deleted = row.querySelector('[name$="-DELETE"]');
+      const active = row.querySelector('[name$="-active"]');
+      const field = row.querySelector('[name$="-original_price"]');
+      return (!deleted?.checked && active?.checked && field?.value) ? Number(field.value) : null;
+    }).filter(value => Number.isFinite(value));
+    const baseTarget = guide.querySelector('[data-naver-base-price]');
+    const rangeTarget = guide.querySelector('[data-naver-price-range]');
+    if (!prices.length) {
+      baseTarget.textContent = '가격 입력 대기';
+      rangeTarget.textContent = '가격 입력 후 자동 계산';
+      return;
+    }
+    const base = Math.min(...prices);
+    const minimum = base < 2000 ? 0 : -base * .5;
+    const maximum = base < 10000 ? base : base * .5;
+    baseTarget.textContent = formatWon(base);
+    rangeTarget.textContent = `${formatWon(minimum)} ~ +${formatWon(maximum)}`;
+  };
+  document.querySelectorAll('[data-naver-price-guide]').forEach(guide => {
+    const prefix = guide.dataset.naverPriceGuide;
+    const table = document.querySelector(`table[data-option-formset="${prefix}"]`);
+    table?.addEventListener('input', () => updateNaverPriceGuide(prefix));
+    table?.addEventListener('change', () => updateNaverPriceGuide(prefix));
+    updateNaverPriceGuide(prefix);
+  });
   document.querySelector('.workspace-editor').addEventListener('submit', () => {
     document.querySelectorAll('[data-option-group-builder]').forEach(builder => syncOptionGroups(builder.dataset.optionGroupBuilder));
   });

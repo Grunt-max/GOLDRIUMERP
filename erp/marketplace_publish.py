@@ -7,6 +7,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .marketplaces import MarketplaceError, _coupang_headers, _json_request, _naver_token
+from .marketplace_rules import naver_option_price_error
 
 
 def _price(product, channel):
@@ -39,6 +40,9 @@ def _naver_price_plan(options):
         )
     base_original = min(row["original"] for row in rows)
     discount = discounts.pop()
+    price_error = naver_option_price_error(row["original"] for row in rows)
+    if price_error:
+        raise MarketplaceError(price_error)
     return {
         "rows": rows, "base_original": base_original,
         "base_sale": base_original - discount, "discount": discount,
@@ -75,6 +79,9 @@ def publish_readiness(product, channel):
         discounts = {option.effective_original_price - option.sale_price for option in options}
         if len(discounts) > 1:
             errors.append("네이버의 모든 옵션은 '정상가 - 판매가' 금액이 같아야 합니다.")
+        price_error = naver_option_price_error(option.effective_original_price for option in options) if options else ""
+        if price_error:
+            errors.append(price_error)
         if not setting.after_service_phone: errors.append("네이버 A/S 전화번호를 입력하세요.")
         if not setting.after_service_guide: errors.append("네이버 A/S 안내를 입력하세요.")
         if setting.origin_area_code == "04" and not setting.origin_area_content:

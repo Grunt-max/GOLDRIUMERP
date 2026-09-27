@@ -10,6 +10,7 @@ from django.utils import timezone
 from django.db.models.functions import Lower, Trim
 from .quick_orders import parse_quick_order_lines, resolve_order_product
 from .models import CompanyProfile, Customer, DailyActivity, Factory, GoldLedgerEntry, GoldPrice, Material, OpenMarketChannelOption, OpenMarketChannelSetting, OpenMarketProduct, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleItem, SaleTransaction
+from .marketplace_rules import naver_option_price_error
 
 
 class OpenMarketProductForm(forms.ModelForm):
@@ -58,6 +59,58 @@ class OpenMarketWorkspaceForm(forms.ModelForm):
 
 
 class OpenMarketChannelSettingForm(forms.ModelForm):
+    NOTICE_REFERENCE_CHOICES = (
+        ("0", "네이버 기본 안내문 사용"),
+        ("1", "상품 상세설명 참조"),
+    )
+    notice_return_cost_reason = forms.ChoiceField(label="제품 하자·오배송 반품 안내", choices=NOTICE_REFERENCE_CHOICES, required=False)
+    notice_no_refund_reason = forms.ChoiceField(label="단순변심 청약철회 제한 안내", choices=NOTICE_REFERENCE_CHOICES, required=False)
+    notice_quality_assurance_standard = forms.ChoiceField(label="교환·반품·품질보증 기준", choices=NOTICE_REFERENCE_CHOICES, required=False)
+    notice_compensation_procedure = forms.ChoiceField(label="환불·지연배상 절차", choices=NOTICE_REFERENCE_CHOICES, required=False)
+    notice_trouble_shooting_contents = forms.ChoiceField(label="소비자 분쟁 처리 기준", choices=NOTICE_REFERENCE_CHOICES, required=False)
+    notice_material = forms.CharField(label="소재", max_length=200, required=False)
+    notice_purity = forms.CharField(label="순도", max_length=200, required=False)
+    notice_band_material = forms.CharField(label="밴드 재질", max_length=200, required=False, help_text="시계 상품에만 입력합니다.")
+    notice_weight = forms.CharField(label="중량", max_length=200, required=False)
+    notice_manufacturer = forms.CharField(label="제조자(사)", max_length=200, required=False)
+    notice_producer = forms.CharField(label="제조국", max_length=200, required=False, help_text="원산지와 가공지가 다를 때 입력합니다.")
+    notice_size = forms.CharField(label="치수", max_length=200, required=False)
+    notice_caution = forms.CharField(label="착용 시 주의사항", max_length=1500, required=False, widget=forms.Textarea(attrs={"rows": 2}))
+    notice_specification = forms.CharField(label="주요 사양", max_length=1500, required=False, widget=forms.Textarea(attrs={"rows": 2}))
+    notice_provide_warranty = forms.CharField(label="보증서 제공 여부", max_length=200, required=False)
+    notice_warranty_policy = forms.CharField(label="품질 보증 기준", max_length=1500, required=False, widget=forms.Textarea(attrs={"rows": 2}))
+    notice_after_service_director = forms.CharField(label="A/S 책임자와 전화번호", max_length=200, required=False)
+
+    JEWELLERY_NOTICE_FIELDS = {
+        "notice_return_cost_reason": "returnCostReason",
+        "notice_no_refund_reason": "noRefundReason",
+        "notice_quality_assurance_standard": "qualityAssuranceStandard",
+        "notice_compensation_procedure": "compensationProcedure",
+        "notice_trouble_shooting_contents": "troubleShootingContents",
+        "notice_material": "material",
+        "notice_purity": "purity",
+        "notice_band_material": "bandMaterial",
+        "notice_weight": "weight",
+        "notice_manufacturer": "manufacturer",
+        "notice_producer": "producer",
+        "notice_size": "size",
+        "notice_caution": "caution",
+        "notice_specification": "specification",
+        "notice_provide_warranty": "provideWarranty",
+        "notice_warranty_policy": "warrantyPolicy",
+        "notice_after_service_director": "afterServiceDirector",
+    }
+    JEWELLERY_NOTICE_DEFAULTS = {
+        "notice_return_cost_reason": "1", "notice_no_refund_reason": "1",
+        "notice_quality_assurance_standard": "1", "notice_compensation_procedure": "1",
+        "notice_trouble_shooting_contents": "1", "notice_material": "상품상세 참조",
+        "notice_purity": "상품상세 참조", "notice_weight": "상품상세 참조",
+        "notice_manufacturer": "상품상세 참조", "notice_size": "상품상세 참조",
+        "notice_caution": "상품상세 참조", "notice_specification": "상품상세 참조",
+        "notice_provide_warranty": "상품상세 참조", "notice_warranty_policy": "상품상세 참조",
+        "notice_after_service_director": "상품상세 참조",
+    }
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         for field in self.fields.values():
@@ -66,11 +119,36 @@ class OpenMarketChannelSettingForm(forms.ModelForm):
         self.fields["channel_product_name"].help_text = "비워 두면 공통 상품명을 사용합니다."
         self.fields["notice_data"].help_text = "카테고리에 맞는 상품정보고시 JSON입니다. 등록 전 직접 확인·수정하세요."
         self.fields["extra_attributes"].help_text = "배송지, 추가 속성 등 채널 API에 더 보낼 JSON입니다. 고급 설정입니다."
+        notice_data = self.instance.notice_data if self.instance and isinstance(self.instance.notice_data, dict) else {}
+        jewellery = notice_data.get("jewellery", {}) if isinstance(notice_data.get("jewellery"), dict) else {}
+        for form_name, api_name in self.JEWELLERY_NOTICE_FIELDS.items():
+            self.fields[form_name].initial = jewellery.get(
+                api_name, self.JEWELLERY_NOTICE_DEFAULTS.get(form_name, "")
+            )
         if self.instance and self.instance.channel == "coupang":
             for name in ("naver_origin_status", "naver_channel_display_status", "after_service_phone",
                          "after_service_guide", "origin_area_code", "origin_area_content", "minor_purchasable"):
                 self.fields[name].disabled = True
                 self.fields[name].required = False
+
+    def clean(self):
+        cleaned = super().clean()
+        if not self.instance or self.instance.channel != "naver" or cleaned.get("notice_type") != "JEWELLERY":
+            return cleaned
+        raw_notice = cleaned.get("notice_data") if isinstance(cleaned.get("notice_data"), dict) else {}
+        notice = dict(raw_notice)
+        existing = notice.get("jewellery", {}) if isinstance(notice.get("jewellery"), dict) else {}
+        jewellery = dict(existing)
+        for form_name, api_name in self.JEWELLERY_NOTICE_FIELDS.items():
+            value = cleaned.get(form_name) or self.JEWELLERY_NOTICE_DEFAULTS.get(form_name)
+            if value not in (None, ""):
+                jewellery[api_name] = value
+            else:
+                jewellery.pop(api_name, None)
+        notice["productInfoProvidedNoticeType"] = "JEWELLERY"
+        notice["jewellery"] = jewellery
+        cleaned["notice_data"] = notice
+        return cleaned
 
     class Meta:
         model = OpenMarketChannelSetting
@@ -153,6 +231,12 @@ class BaseOpenMarketChannelOptionFormSet(BaseInlineFormSet):
                     "네이버는 한 상품에 즉시할인액 하나를 적용합니다. "
                     "모든 옵션의 '정상가 - 판매가' 금액을 같게 맞춰 주세요."
                 )
+            price_error = naver_option_price_error([
+                row.get("original_price") if row.get("original_price") is not None else row.get("sale_price")
+                for row in active_rows
+            ])
+            if price_error:
+                raise ValidationError(price_error)
 
 
 OpenMarketChannelOptionFormSet = inlineformset_factory(
