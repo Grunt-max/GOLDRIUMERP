@@ -78,27 +78,32 @@
       <p>가장 낮은 할인 전 가격이 기본 판매가가 되며, 그 옵션이 추가금 0원 기준 옵션으로 등록됩니다.</p>
     </div>
     {% endif %}
+    <div class="channel-option-source"><div><small>공통 옵션 기준가격</small><b>할인 전 {{ channel_form.option_base_original_price.value|default:'미입력' }}원 · 판매가 {{ channel_form.option_base_sale_price.value|default:'미입력' }}원</b></div><span>공통 상품정보 탭에서 옵션 구성과 기준가격을 바꾼 뒤 다시 적용할 수 있습니다.</span></div>
     {{ option_formset.management_form }}
     {% if option_formset.non_form_errors %}<div class="workspace-errors">{{ option_formset.non_form_errors }}</div>{% endif %}
 
     <div class="option-group-builder" data-option-group-builder="{{ option_formset.prefix }}">
       <div class="option-group-title"><b>고객에게 보일 옵션명</b><span>옵션명은 여기에서 한 번만 정하고 아래 표에는 조합별 옵션값만 입력합니다.</span></div>
       <div class="option-group-inputs">
-        <label><span>첫 번째 옵션명 <em>*</em></span>{{ option_formset.0.option_name_1 }}{{ option_formset.0.option_name_1.errors }}<small>예: 주얼리 사이즈</small></label>
-        <label><span>두 번째 옵션명 <i>선택</i></span>{{ option_formset.0.option_name_2 }}{{ option_formset.0.option_name_2.errors }}<small>예: 색상 · 사용하지 않으면 비워 두세요.</small></label>
+        <label><span>첫 번째 옵션명 <em>*</em></span>{{ option_formset.0.option_name_1 }}{{ option_formset.0.option_name_1.errors }}<small>예: 사이즈</small></label>
+        <label><span>두 번째 옵션명 <i>선택</i></span>{{ option_formset.0.option_name_2 }}{{ option_formset.0.option_name_2.errors }}<small>예: 색상</small></label>
+        <label><span>세 번째 옵션명 <i>선택</i></span>{{ option_formset.0.option_name_3 }}{{ option_formset.0.option_name_3.errors }}<small>예: 길이</small></label>
       </div>
     </div>
 
+    <details class="channel-option-exceptions" {% if option_formset|length <= 20 %}open{% endif %}>
+      <summary><span>조합별 가격·재고와 예외 설정</span><b>{{ option_formset|length }}개 행</b><small>공통 규칙과 다른 조합만 ‘자동 계산 제외’를 선택해 수정하세요.</small></summary>
     <div class="workspace-option-table-wrap">
       <table class="workspace-option-table" data-option-formset="{{ option_formset.prefix }}">
-        <thead><tr><th>No.</th><th>관리정보</th><th>첫 번째 옵션값<br><small>예: 14K(45cm)</small></th><th>두 번째 옵션값<br><small>예: 옐로우골드</small></th><th>할인 전 가격<br><small>정상가</small></th><th>실제 판매가<br><small>즉시할인 후</small></th><th>재고</th><th>사용·순서</th><th>삭제</th></tr></thead>
+        <thead><tr><th>No.</th><th>ERP 관리</th><th>첫 번째 옵션값</th><th>두 번째 옵션값</th><th>세 번째 옵션값</th><th>할인 전 가격<br><small>정상가</small></th><th>실제 판매가<br><small>즉시할인 후</small></th><th>재고</th><th>사용·순서</th><th>삭제</th></tr></thead>
         <tbody>
         {% for option_form in option_formset %}
           <tr class="workspace-option-row">
             <td class="option-row-number">{{ forloop.counter }}</td>
-            <td class="option-management">{{ option_form.id }}<label>내부 원가 연결{{ option_form.internal_variant }}</label>{{ option_form.internal_variant.errors }}<label>판매자 SKU <small>비우면 자동</small>{{ option_form.seller_sku }}</label>{{ option_form.seller_sku.errors }}{% if option_form.instance.external_option_id %}<small class="external-option-number">마켓 옵션 ID {{ option_form.instance.external_option_id }}</small>{% endif %}</td>
+            <td class="option-management">{{ option_form.id }}<div class="option-auto-code"><small>{% if option_form.instance.common_combination_id %}ERP 자동 옵션코드{% else %}수동 옵션{% endif %}</small><strong>{{ option_form.instance.common_combination.option_code|default:'저장 시 자동 생성' }}</strong><span>{{ option_form.instance.internal_variant|default:'원가 계산 기준 미연결' }}</span></div><details><summary>관리정보 직접 수정</summary><label>원가 계산 기준{{ option_form.internal_variant }}</label>{{ option_form.internal_variant.errors }}<label>마켓 판매자 SKU <small>비우면 자동</small>{{ option_form.seller_sku }}</label>{{ option_form.seller_sku.errors }}<label class="manual-override">{{ option_form.manual_override }} 자동 가격·재고 계산 제외</label>{% if option_form.instance.external_option_id %}<small class="external-option-number">외부 옵션 ID {{ option_form.instance.external_option_id }}</small>{% endif %}</details></td>
             <td>{{ option_form.option_value_1 }}{{ option_form.option_value_1.errors }}{% if not forloop.first %}<span class="option-group-mirror">{{ option_form.option_name_1 }}</span>{% endif %}</td>
             <td>{{ option_form.option_value_2 }}{{ option_form.option_value_2.errors }}{% if not forloop.first %}<span class="option-group-mirror">{{ option_form.option_name_2 }}</span>{% endif %}</td>
+            <td>{{ option_form.option_value_3 }}{{ option_form.option_value_3.errors }}{% if not forloop.first %}<span class="option-group-mirror">{{ option_form.option_name_3 }}</span>{% endif %}</td>
             <td class="price-cell">{{ option_form.original_price }}<span>원</span>{{ option_form.original_price.errors }}</td>
             <td class="price-cell sale-price-cell">{{ option_form.sale_price }}<span>원</span>{{ option_form.sale_price.errors }}</td>
             <td>{{ option_form.stock_quantity }}{{ option_form.stock_quantity.errors }}</td>
@@ -110,8 +115,9 @@
         </tbody>
       </table>
     </div>
-    <template data-option-empty="{{ option_formset.prefix }}"><tr class="workspace-option-row"><td class="option-row-number"></td><td class="option-management">{{ option_formset.empty_form.id }}<label>내부 원가 연결{{ option_formset.empty_form.internal_variant }}</label><label>판매자 SKU <small>비우면 자동</small>{{ option_formset.empty_form.seller_sku }}</label></td><td>{{ option_formset.empty_form.option_value_1 }}<span class="option-group-mirror">{{ option_formset.empty_form.option_name_1 }}</span></td><td>{{ option_formset.empty_form.option_value_2 }}<span class="option-group-mirror">{{ option_formset.empty_form.option_name_2 }}</span></td><td class="price-cell">{{ option_formset.empty_form.original_price }}<span>원</span></td><td class="price-cell sale-price-cell">{{ option_formset.empty_form.sale_price }}<span>원</span></td><td>{{ option_formset.empty_form.stock_quantity }}</td><td class="option-controls"><label>{{ option_formset.empty_form.active }} 사용</label><label>순서 {{ option_formset.empty_form.sort_order }}</label></td><td class="delete-cell"><label>{{ option_formset.empty_form.DELETE }} 삭제</label></td></tr></template>
+    <template data-option-empty="{{ option_formset.prefix }}"><tr class="workspace-option-row"><td class="option-row-number"></td><td class="option-management">{{ option_formset.empty_form.id }}<div class="option-auto-code"><small>수동 옵션</small><strong>저장 시 자동 생성</strong><span>원가 계산 기준 미연결</span></div><details><summary>관리정보 직접 수정</summary><label>원가 계산 기준{{ option_formset.empty_form.internal_variant }}</label><label>마켓 판매자 SKU <small>비우면 자동</small>{{ option_formset.empty_form.seller_sku }}</label><label class="manual-override">{{ option_formset.empty_form.manual_override }} 자동 가격·재고 계산 제외</label></details></td><td>{{ option_formset.empty_form.option_value_1 }}<span class="option-group-mirror">{{ option_formset.empty_form.option_name_1 }}</span></td><td>{{ option_formset.empty_form.option_value_2 }}<span class="option-group-mirror">{{ option_formset.empty_form.option_name_2 }}</span></td><td>{{ option_formset.empty_form.option_value_3 }}<span class="option-group-mirror">{{ option_formset.empty_form.option_name_3 }}</span></td><td class="price-cell">{{ option_formset.empty_form.original_price }}<span>원</span></td><td class="price-cell sale-price-cell">{{ option_formset.empty_form.sale_price }}<span>원</span></td><td>{{ option_formset.empty_form.stock_quantity }}</td><td class="option-controls"><label>{{ option_formset.empty_form.active }} 사용</label><label>순서 {{ option_formset.empty_form.sort_order }}</label></td><td class="delete-cell"><label>{{ option_formset.empty_form.DELETE }} 삭제</label></td></tr></template>
     <button type="button" class="workspace-add-option" data-add-option="{{ option_formset.prefix }}">＋ 판매 옵션 조합 추가</button>
+    </details>
     {% if channel_key == 'naver' %}<p class="naver-price-note">네이버는 한 상품에 즉시할인액 하나를 사용하므로 모든 조합의 ‘할인 전 가격 − 실제 판매가’가 같아야 합니다.</p>{% endif %}
   </section>
 

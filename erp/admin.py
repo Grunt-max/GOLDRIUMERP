@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, DailySaleSequence, Factory, GoldLedgerEntry, GoldPrice, MarketplaceProduct, Material, OpenMarketChannelOffer, OpenMarketChannelOption, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketProductImage, OpenMarketVariant, Order, Product, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, SaleCustomerChangeLog, SaleItem, SaleTransaction
+from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, DailySaleSequence, Factory, GoldLedgerEntry, GoldPrice, MarketplaceProduct, Material, OpenMarketChannelOffer, OpenMarketChannelOption, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketOptionCombination, OpenMarketProduct, OpenMarketProductImage, OpenMarketVariant, Order, Product, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, SaleCustomerChangeLog, SaleItem, SaleTransaction
 
 
 @admin.register(Material)
@@ -143,9 +143,16 @@ class OpenMarketChannelOfferAdmin(admin.ModelAdmin):
 
 @admin.register(OpenMarketChannelOption)
 class OpenMarketChannelOptionAdmin(admin.ModelAdmin):
-    list_display = ("setting", "seller_sku", "external_option_id", "option_value_1", "option_value_2", "original_price", "sale_price", "stock_quantity", "active")
+    list_display = ("setting", "seller_sku", "external_option_id", "option_value_1", "option_value_2", "option_value_3", "original_price", "sale_price", "stock_quantity", "active")
     list_filter = ("setting__channel", "active")
-    search_fields = ("setting__product__code", "setting__product__name", "seller_sku", "external_option_id", "external_item_id", "option_value_1", "option_value_2")
+    search_fields = ("setting__product__code", "setting__product__name", "seller_sku", "external_option_id", "external_item_id", "option_value_1", "option_value_2", "option_value_3")
+
+
+@admin.register(OpenMarketOptionCombination)
+class OpenMarketOptionCombinationAdmin(admin.ModelAdmin):
+    list_display = ("product", "option_code", "stock_quantity", "active", "sort_order")
+    list_filter = ("active",)
+    search_fields = ("product__code", "product__name", "option_code")
 
 
 @admin.register(OpenMarketMatchCandidate)

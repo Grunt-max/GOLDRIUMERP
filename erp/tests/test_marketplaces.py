@@ -8,7 +8,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
-from erp.models import MarketplaceOrder, MarketplaceProduct, MarketplaceSettlement, OpenMarketChannelOffer, OpenMarketChannelOption, OpenMarketChannelSetting, OpenMarketProduct, OpenMarketVariant
+from erp.models import MarketplaceOrder, MarketplaceProduct, MarketplaceSettlement, OpenMarketChannelOffer, OpenMarketChannelOption, OpenMarketChannelSetting, OpenMarketOptionCombination, OpenMarketProduct, OpenMarketVariant
 
 
 class MarketplaceReadOnlyTests(TestCase):
@@ -40,6 +40,8 @@ class MarketplaceReadOnlyTests(TestCase):
         edit_page = self.client.get(reverse("erp:marketplace_workspace_edit", args=[product.pk]))
         self.assertEqual(edit_page.status_code, 200)
         self.assertContains(edit_page, "GPT 콘텐츠 준비")
+        self.assertContains(edit_page, "옵션 설계도와 마켓별 가격 기준")
+        self.assertContains(edit_page, "저장하고 마켓 옵션 만들기")
 
     def test_workspace_silver_product_uses_silver_weight_cost(self):
         product = OpenMarketProduct.objects.create(
@@ -302,6 +304,85 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertEqual(coupang.sale_price, Decimal("205000"))
         self.assertEqual(coupang.original_price, Decimal("230000"))
         self.assertEqual(coupang.option_name_1, "스타일")
+
+    def test_common_option_blueprint_generates_generic_channel_combinations(self):
+        from erp.marketplace_options import sync_common_options
+
+        product = OpenMarketProduct.objects.create(
+            code="GENERIC-001", name="범용 옵션 상품", option_default_stock=12,
+            option_blueprint={"groups": [
+                {"id": "g-style", "name": "스타일", "values": [
+                    {"id": "v-basic", "label": "기본형", "adjustments": {"naver": 0, "coupang": 0}},
+                    {"id": "v-premium", "label": "프리미엄", "adjustments": {"naver": 10000, "coupang": 12000}},
+                ]},
+                {"id": "g-length", "name": "길이", "values": [
+                    {"id": "v-short", "label": "짧게", "adjustments": {"naver": 0, "coupang": 0}},
+                    {"id": "v-long", "label": "길게", "adjustments": {"naver": 5000, "coupang": 7000}},
+                ]},
+            ]},
+        )
+        naver = OpenMarketChannelSetting.objects.create(
+            product=product, channel="naver",
+            option_base_original_price=200000, option_base_sale_price=180000,
+        )
+        coupang = OpenMarketChannelSetting.objects.create(
+            product=product, channel="coupang",
+            option_base_original_price=210000, option_base_sale_price=175000,
+        )
+
+        result = sync_common_options(product)
+
+        self.assertEqual(result["combinations"], 4)
+        self.assertEqual(OpenMarketOptionCombination.objects.filter(product=product, active=True).count(), 4)
+        self.assertEqual(naver.selling_options.filter(generated_from_common=True).count(), 4)
+        self.assertEqual(coupang.selling_options.filter(generated_from_common=True).count(), 4)
+        premium_long = naver.selling_options.get(option_value_1="프리미엄", option_value_2="길게")
+        self.assertEqual(premium_long.original_price, Decimal("215000"))
+        self.assertEqual(premium_long.sale_price, Decimal("195000"))
+        self.assertEqual(premium_long.stock_quantity, 12)
+        self.assertTrue(premium_long.common_combination.option_code.startswith("GENERIC-001-O"))
+
+        manual = OpenMarketChannelOption.objects.create(
+            setting=naver, option_name_1="별도", option_value_1="수동",
+            original_price=100000, sale_price=90000,
+        )
+        premium_long.manual_override = True
+        premium_long.sale_price = 199000
+        premium_long.save(update_fields=["manual_override", "sale_price"])
+        naver.option_base_sale_price = 170000
+        naver.save(update_fields=["option_base_sale_price"])
+
+        sync_common_options(product)
+
+        premium_long.refresh_from_db()
+        self.assertEqual(premium_long.sale_price, Decimal("199000"))
+        self.assertTrue(OpenMarketChannelOption.objects.filter(pk=manual.pk, active=True).exists())
+
+    @patch("erp.marketplace_publish._json_request")
+    @patch("erp.marketplace_publish._naver_upload_image", return_value="https://example.com/product.jpg")
+    @patch("erp.marketplace_publish._naver_token", return_value="token")
+    def test_naver_publish_supports_three_generic_option_groups(self, _token, _image, request_api):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from erp.marketplace_publish import publish_naver
+
+        product = OpenMarketProduct.objects.create(
+            code="NAVER-THREE", name="세 단계 옵션",
+            image=SimpleUploadedFile("item.jpg", b"image"), detail_page_html="<p>상세</p>",
+        )
+        setting = OpenMarketChannelSetting.objects.create(product=product, channel="naver", category_code="50000000")
+        OpenMarketChannelOption.objects.create(
+            setting=setting, option_name_1="구성", option_value_1="A",
+            option_name_2="규격", option_value_2="B",
+            option_name_3="포장", option_value_3="C",
+            original_price=200000, sale_price=180000,
+        )
+        request_api.return_value = {"originProductNo": 1}
+
+        publish_naver(product)
+
+        option_info = request_api.call_args.kwargs["body"]["originProduct"]["detailAttribute"]["optionInfo"]
+        self.assertEqual(option_info["optionCombinationGroupNames"]["optionGroupName3"], "포장")
+        self.assertEqual(option_info["optionCombinations"][0]["optionName3"], "C")
 
     def test_publish_payload_deep_merge_preserves_generated_fields(self):
         from erp.marketplace_publish import _deep_merge

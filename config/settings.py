@@ -92,6 +92,8 @@ SECURE_HSTS_SECONDS = 31536000 if not DEBUG else 0
 SECURE_HSTS_INCLUDE_SUBDOMAINS = not DEBUG
 SESSION_COOKIE_AGE = int(os.environ.get("ERP_SESSION_COOKIE_AGE", "28800"))
 SESSION_SAVE_EVERY_REQUEST = True
+# A generated product can legitimately submit 100+ option rows in one workspace save.
+DATA_UPLOAD_MAX_NUMBER_FIELDS = int(os.environ.get("ERP_DATA_UPLOAD_MAX_NUMBER_FIELDS", "10000"))
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 LOGIN_URL = "login"
 LOGIN_REDIRECT_URL = "erp:dashboard"

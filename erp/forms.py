@@ -10,6 +10,7 @@ from django.utils import timezone
 from django.db.models.functions import Lower, Trim
 from .quick_orders import parse_quick_order_lines, resolve_order_product
 from .models import CompanyProfile, Customer, DailyActivity, Factory, GoldLedgerEntry, GoldPrice, Material, OpenMarketChannelOption, OpenMarketChannelSetting, OpenMarketProduct, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleItem, SaleTransaction
+from .marketplace_options import normalize_option_blueprint
 from .marketplace_rules import naver_option_price_error
 
 
@@ -44,7 +45,8 @@ class OpenMarketWorkspaceForm(forms.ModelForm):
         fields = ("name", "brand", "category", "model_name", "manufacturer", "origin_country",
                   "default_weight", "pricing_material", "silver_price_per_gram", "base_labor_cost", "target_margin_rate", "naver_fee_rate",
                   "coupang_fee_rate", "description", "detail_page_html", "image", "target_channels",
-                  "workspace_status", "ai_instruction", "image_instruction", "memo")
+                  "workspace_status", "ai_instruction", "image_instruction", "memo",
+                  "option_blueprint", "option_default_stock")
         widgets = {
             "description": forms.Textarea(attrs={"rows": 3, "placeholder": "고객에게 보여줄 핵심 설명"}),
             "detail_page_html": forms.Textarea(attrs={"rows": 5, "placeholder": "상세페이지 본문 또는 HTML"}),
@@ -52,10 +54,28 @@ class OpenMarketWorkspaceForm(forms.ModelForm):
             "image_instruction": forms.Textarea(attrs={"rows": 3, "placeholder": "예: 흰 배경, 제품 중앙 정렬, 금색은 자연스럽게"}),
             "memo": forms.Textarea(attrs={"rows": 2}),
             "image": forms.ClearableFileInput(attrs={"accept": ".jpg,.jpeg,.png,.webp,.gif"}),
+            "option_blueprint": forms.HiddenInput(attrs={"data-option-blueprint": ""}),
+            "option_default_stock": forms.NumberInput(attrs={"min": "0", "step": "1"}),
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["option_default_stock"].required = False
 
     def clean_target_channels(self):
         return list(self.cleaned_data.get("target_channels") or [])
+
+    def clean_option_blueprint(self):
+        if self.is_bound and "option_blueprint" not in self.data:
+            return self.instance.option_blueprint or {}
+        try:
+            return normalize_option_blueprint(self.cleaned_data.get("option_blueprint"))
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+
+    def clean_option_default_stock(self):
+        value = self.cleaned_data.get("option_default_stock")
+        return value if value is not None else (self.instance.option_default_stock or 999)
 
 
 class OpenMarketChannelSettingForm(forms.ModelForm):
@@ -152,12 +172,16 @@ class OpenMarketChannelSettingForm(forms.ModelForm):
 
     class Meta:
         model = OpenMarketChannelSetting
-        fields = ("category_code", "category_name", "channel_product_name", "delivery_method", "delivery_company_code",
+        fields = ("category_code", "category_name", "channel_product_name",
+                  "option_base_original_price", "option_base_sale_price",
+                  "delivery_method", "delivery_company_code",
                   "outbound_location_code", "return_center_code", "delivery_fee_type", "delivery_fee",
                   "return_fee", "notice_type", "notice_data", "naver_origin_status",
                   "naver_channel_display_status", "after_service_phone", "after_service_guide",
                   "origin_area_code", "origin_area_content", "minor_purchasable", "extra_attributes")
         widgets = {"category_name": forms.HiddenInput(),
+                   "option_base_original_price": forms.NumberInput(attrs={"min": "0", "step": "100"}),
+                   "option_base_sale_price": forms.NumberInput(attrs={"min": "0", "step": "100"}),
                    "notice_data": forms.Textarea(attrs={"rows": 8, "spellcheck": "false"}),
                    "extra_attributes": forms.Textarea(attrs={"rows": 8, "spellcheck": "false"})}
 
@@ -166,8 +190,9 @@ class OpenMarketChannelOptionForm(forms.ModelForm):
     class Meta:
         model = OpenMarketChannelOption
         fields = ("internal_variant", "seller_sku", "option_name_1", "option_value_1",
-                  "option_name_2", "option_value_2", "original_price", "sale_price",
-                  "stock_quantity", "active", "sort_order")
+                  "option_name_2", "option_value_2", "option_name_3", "option_value_3",
+                  "original_price", "sale_price", "stock_quantity", "active", "sort_order",
+                  "manual_override")
         widgets = {
             "original_price": forms.NumberInput(attrs={"min": "0", "step": "100"}),
             "sale_price": forms.NumberInput(attrs={"min": "0", "step": "100"}),
@@ -186,6 +211,8 @@ class OpenMarketChannelOptionForm(forms.ModelForm):
         self.fields["option_value_1"].widget.attrs["placeholder"] = "예: 14K(45cm)"
         self.fields["option_name_2"].widget.attrs["placeholder"] = "예: 색상"
         self.fields["option_value_2"].widget.attrs["placeholder"] = "예: 옐로우골드"
+        self.fields["option_name_3"].widget.attrs["placeholder"] = "예: 호수"
+        self.fields["option_value_3"].widget.attrs["placeholder"] = "예: 12호"
         self.fields["original_price"].widget.attrs["placeholder"] = "할인 전"
         self.fields["sale_price"].widget.attrs["placeholder"] = "실제 판매가"
         if self.instance and self.instance.setting_id:
@@ -193,9 +220,11 @@ class OpenMarketChannelOptionForm(forms.ModelForm):
 
     def clean(self):
         cleaned = super().clean()
-        name_2, value_2 = cleaned.get("option_name_2", "").strip(), cleaned.get("option_value_2", "").strip()
-        if bool(name_2) != bool(value_2):
-            raise ValidationError("두 번째 옵션은 옵션명과 옵션값을 함께 입력하세요.")
+        for number, label in ((2, "두 번째"), (3, "세 번째")):
+            name = cleaned.get(f"option_name_{number}", "").strip()
+            value = cleaned.get(f"option_value_{number}", "").strip()
+            if bool(name) != bool(value):
+                raise ValidationError(f"{label} 옵션은 옵션명과 옵션값을 함께 입력하세요.")
         original_price, sale_price = cleaned.get("original_price"), cleaned.get("sale_price")
         if original_price is not None and sale_price is not None and original_price < sale_price:
             self.add_error("original_price", "정상가는 판매가보다 낮을 수 없습니다.")
@@ -215,9 +244,11 @@ class BaseOpenMarketChannelOptionFormSet(BaseInlineFormSet):
             return
         group_1 = {row.get("option_name_1", "").strip() for row in active_rows}
         group_2 = {row.get("option_name_2", "").strip() for row in active_rows}
-        if len(group_1) > 1 or len(group_2) > 1:
-            raise ValidationError("한 마켓 내 모든 판매 옵션의 옵션명 1·2는 같아야 합니다.")
-        combinations = [(row.get("option_value_1", "").strip(), row.get("option_value_2", "").strip())
+        group_3 = {row.get("option_name_3", "").strip() for row in active_rows}
+        if len(group_1) > 1 or len(group_2) > 1 or len(group_3) > 1:
+            raise ValidationError("한 마켓 내 모든 판매 옵션의 옵션명 1·2·3은 같아야 합니다.")
+        combinations = [(row.get("option_value_1", "").strip(), row.get("option_value_2", "").strip(),
+                         row.get("option_value_3", "").strip())
                         for row in active_rows]
         if len(combinations) != len(set(combinations)):
             raise ValidationError("같은 옵션값 조합을 중복해서 등록할 수 없습니다.")

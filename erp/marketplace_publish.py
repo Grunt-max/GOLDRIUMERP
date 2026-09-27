@@ -72,9 +72,9 @@ def publish_readiness(product, channel):
     options = _active_options(setting)
     if any(option.effective_original_price < option.sale_price for option in options):
         errors.append("정상가는 판매가보다 낮을 수 없습니다.")
-    option_groups = {(option.option_name_1, option.option_name_2) for option in options}
+    option_groups = {(option.option_name_1, option.option_name_2, option.option_name_3) for option in options}
     if len(option_groups) > 1:
-        errors.append("한 마켓 내 모든 판매 옵션의 옵션명 1·2를 같게 맞춰 주세요.")
+        errors.append("한 마켓 내 모든 판매 옵션의 옵션명 1·2·3을 같게 맞춰 주세요.")
     if channel == "naver":
         discounts = {option.effective_original_price - option.sale_price for option in options}
         if len(discounts) > 1:
@@ -132,10 +132,14 @@ def publish_naver(product):
         }
         if option.option_name_2 and option.option_value_2:
             combination["optionName2"] = option.option_value_2
+        if option.option_name_3 and option.option_value_3:
+            combination["optionName3"] = option.option_value_3
         option_combinations.append(combination)
     group_names = {"optionGroupName1": options[0].option_name_1}
     if options[0].option_name_2:
         group_names["optionGroupName2"] = options[0].option_name_2
+    if options[0].option_name_3:
+        group_names["optionGroupName3"] = options[0].option_name_3
     origin = {
         "statusType": setting.naver_origin_status, "saleType": "NEW", "leafCategoryId": setting.category_code,
         "name": setting.channel_product_name or product.name, "detailContent": product.detail_page_html,
@@ -182,7 +186,8 @@ def publish_coupang(product, image_url):
     for option in setting.selling_options.filter(active=True):
         sale_price = int(option.sale_price)
         original_price = int(option.effective_original_price)
-        option_values = [option.option_value_1] + ([option.option_value_2] if option.option_value_2 else [])
+        option_values = [option.option_value_1]
+        option_values += [value for value in (option.option_value_2, option.option_value_3) if value]
         option_attributes = [
             {"attributeTypeName": option.option_name_1, "attributeValueName": option.option_value_1, "exposed": "EXPOSED"}
         ]
@@ -190,6 +195,12 @@ def publish_coupang(product, image_url):
             option_attributes.append({
                 "attributeTypeName": option.option_name_2,
                 "attributeValueName": option.option_value_2,
+                "exposed": "EXPOSED",
+            })
+        if option.option_name_3 and option.option_value_3:
+            option_attributes.append({
+                "attributeTypeName": option.option_name_3,
+                "attributeValueName": option.option_value_3,
                 "exposed": "EXPOSED",
             })
         items.append({

@@ -25,6 +25,7 @@ from .marketplaces import MarketplaceError, channel_configuration, fetch_coupang
 from .marketplace_transformers import build_channel_preview
 from .marketplace_ai import ProductContentError, generate_product_content
 from .marketplace_publish import _naver_price_plan, publish_coupang, publish_naver, publish_readiness
+from .marketplace_options import sync_common_options
 from .product_catalog import rebuild_product_weight_profiles
 
 
@@ -224,11 +225,13 @@ def marketplace_workspace_edit(request, pk=None):
                 request.POST or None, instance=setting, prefix=f"workspace-{channel}"
             )
             channel_option_formsets[channel] = OpenMarketChannelOptionFormSet(
-                request.POST or None, instance=setting, prefix=f"workspace-{channel}-options"
+                request.POST or None, instance=setting, prefix=f"workspace-{channel}-options",
+                queryset=setting.selling_options.select_related("internal_variant", "common_combination"),
             )
     channel_forms_valid = all(channel_form.is_valid() for channel_form in channel_forms.values())
     channel_options_valid = all(formset.is_valid() for formset in channel_option_formsets.values())
     if request.method == "POST" and form.is_valid() and channel_forms_valid and channel_options_valid:
+        generation_result = None
         with transaction.atomic():
             product = form.save()
             for channel in product.target_channels:
@@ -251,7 +254,24 @@ def marketplace_workspace_edit(request, pk=None):
                 setting.save()
             for option_formset in channel_option_formsets.values():
                 option_formset.save()
-        messages.success(request, "상품등록 작업실 초안을 저장했습니다.")
+            if request.POST.get("workspace_action") == "generate_options":
+                if product.option_blueprint.get("groups"):
+                    generation_result = sync_common_options(product)
+                else:
+                    generation_result = {
+                        "combinations": 0,
+                        "warnings": ["공통 옵션 그룹과 옵션값을 먼저 입력해 주세요."],
+                    }
+        if generation_result:
+            if generation_result["combinations"]:
+                messages.success(
+                    request,
+                    f"공통 옵션 {generation_result['combinations']:,}개를 만들었습니다. 기준가격이 입력된 마켓에는 판매 옵션도 적용했습니다.",
+                )
+            for warning in generation_result["warnings"]:
+                messages.warning(request, warning)
+        else:
+            messages.success(request, "상품등록 작업실 초안을 저장했습니다.")
         return redirect("erp:marketplace_workspace_edit", pk=product.pk)
     pricing_rows = []
     if product:
@@ -268,11 +288,14 @@ def marketplace_workspace_edit(request, pk=None):
                     channel=channel, external_product_id=f"TEST-{product.code}-{channel}"
                 ).first(),
             }
+    common_combinations = product.option_combinations.filter(active=True) if product else []
     return render(request, "erp/marketplace_workspace_edit.html", {
         "form": form, "product": product, "pricing_rows": pricing_rows, "publishing": publishing,
         "naver_form": channel_forms.get("naver"), "coupang_form": channel_forms.get("coupang"),
         "naver_option_formset": channel_option_formsets.get("naver"),
         "coupang_option_formset": channel_option_formsets.get("coupang"),
+        "common_option_count": common_combinations.count() if product else 0,
+        "common_option_preview": common_combinations[:12] if product else [],
     })
 
 
@@ -429,6 +452,7 @@ def marketplace_workspace_simulate(request, pk, channel):
             "detailAttribute": {"optionInfo": {"optionCombinations": [
                 {"id": option.seller_sku, "optionName1": option.option_value_1,
                  "optionName2": option.option_value_2,
+                 "optionName3": option.option_value_3,
                  "price": int(option.effective_original_price - price_plan["base_original"]),
                  "usable": True} for option in options
             ]}},
@@ -436,7 +460,7 @@ def marketplace_workspace_simulate(request, pk, channel):
     else:
         raw_data = {"testPreview": True, "sellerProductName": setting.channel_product_name or product.name,
                     "items": [{"vendorItemId": option.seller_sku,
-                               "vendorItemName": " / ".join(filter(None, [option.option_value_1, option.option_value_2])),
+                               "vendorItemName": " / ".join(filter(None, [option.option_value_1, option.option_value_2, option.option_value_3])),
                                "originalPrice": int(option.effective_original_price),
                                "salePrice": int(option.sale_price)} for option in options]}
     listing, _ = MarketplaceProduct.objects.update_or_create(
@@ -448,7 +472,7 @@ def marketplace_workspace_simulate(request, pk, channel):
     listing.normalized_offers.all().delete()
     OpenMarketChannelOffer.objects.bulk_create([
         OpenMarketChannelOffer(listing=listing, external_option_id=option.seller_sku,
-                               option_name=" / ".join(filter(None, [option.option_value_1, option.option_value_2])),
+                               option_name=" / ".join(filter(None, [option.option_value_1, option.option_value_2, option.option_value_3])),
                                original_price=option.effective_original_price,
                                sale_price=option.sale_price, display_price=option.sale_price,
                                sale_status="TEST_PREVIEW")

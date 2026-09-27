@@ -13,8 +13,25 @@
       <section class="workspace-panel"><header><b>1. 기본 상품 정보</b><span>ERP 상품명 기준</span></header><div class="erp-product-key"><small>자동 관리번호</small><strong>{{ product.code }}</strong><span>네이버·쿠팡 상품번호와 구분되는 ERP 내부 연결번호입니다.</span></div><div class="workspace-fields">{% include 'erp/_workspace_field.html' with field=form.name label='ERP 상품명' %}{% include 'erp/_workspace_field.html' with field=form.brand %}{% include 'erp/_workspace_field.html' with field=form.model_name %}{% include 'erp/_workspace_field.html' with field=form.category %}{% include 'erp/_workspace_field.html' with field=form.manufacturer %}{% include 'erp/_workspace_field.html' with field=form.origin_country %}</div></section>
       <section class="workspace-panel"><header><b>2. 이미지 작업</b><span>원본 보존</span></header>{% if product.image %}<img class="workspace-main-image" src="{{ product.image.url }}" alt="">{% endif %}<div class="workspace-fields">{% include 'erp/_workspace_field.html' with field=form.image wide=True %}{% include 'erp/_workspace_field.html' with field=form.image_instruction wide=True %}</div><p class="workspace-guide">대표 이미지와 수정 지시를 공통 원본으로 보존합니다.</p></section>
       <section class="workspace-panel wide"><header><b>3. 내부 원가·권장가 기준</b><span>외부 판매 옵션과 분리</span></header><div class="workspace-fields price-fields">{% include 'erp/_workspace_field.html' with field=form.pricing_material %}{% include 'erp/_workspace_field.html' with field=form.default_weight %}{% include 'erp/_workspace_field.html' with field=form.silver_price_per_gram %}{% include 'erp/_workspace_field.html' with field=form.base_labor_cost %}{% include 'erp/_workspace_field.html' with field=form.target_margin_rate %}{% include 'erp/_workspace_field.html' with field=form.naver_fee_rate %}{% include 'erp/_workspace_field.html' with field=form.coupang_fee_rate %}</div><p class="workspace-guide">14K·18K·은 기준은 내부 원가와 권장가 계산용입니다. 고객에게 보일 옵션과 가격은 각 마켓 탭에서 별도로 입력합니다.</p>{% if pricing_rows %}<div class="rium-table-wrap"><table><thead><tr><th>내부 원가 기준</th><th>재료·공임 원가</th><th>네이버 권장가</th><th>쿠팡 권장가</th></tr></thead><tbody>{% for row in pricing_rows %}<tr><td>{{ row.variant.base_variant }}</td><td>{{ row.naver.total_cost|erp_number:0|default:'-' }}</td><td>{{ row.naver.sale_price|erp_number:0|default:'-' }}</td><td>{{ row.coupang.sale_price|erp_number:0|default:'-' }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="workspace-guide">처음 저장하면 재질에 맞는 내부 원가 기준이 생성됩니다.</p>{% endif %}</section>
-      <section class="workspace-panel wide"><header><b>4. GPT 콘텐츠 준비</b><span>미리보기 우선</span></header><div class="workspace-fields content-summary-fields">{% include 'erp/_workspace_field.html' with field=form.ai_instruction %}{% include 'erp/_workspace_field.html' with field=form.description %}</div>{% if product.detail_page_html %}<details class="workspace-detail-preview" open><summary>상세페이지 화면 미리보기</summary><div>{{ product.detail_page_html|safe }}</div></details>{% endif %}<details class="workspace-advanced html-editor"><summary>상세페이지 HTML 직접 수정 (고급)</summary><div class="workspace-fields">{% include 'erp/_workspace_field.html' with field=form.detail_page_html wide=True %}</div></details><p class="workspace-guide">평소에는 미리보기로 확인하고, 필요한 경우에만 HTML 직접 수정을 여세요.</p></section>
-      <section class="workspace-panel wide"><header><b>5. 검토 및 등록 대상</b><span>승인 후 업로드</span></header><div class="workspace-fields review-fields">{% include 'erp/_workspace_field.html' with field=form.target_channels %}{% include 'erp/_workspace_field.html' with field=form.workspace_status %}{% include 'erp/_workspace_field.html' with field=form.memo %}</div></section>
+      <section class="workspace-panel wide common-option-panel">
+        <header><div><small>4. 공통 판매 옵션</small><b>옵션 설계도와 마켓별 가격 기준</b></div><span>어떤 상품에도 사용</span></header>
+        {{ form.option_blueprint }}{{ form.option_blueprint.errors }}
+        <div class="common-option-intro"><b>옵션 그룹과 값을 한 번만 만드세요.</b><span>ERP가 모든 조합을 만들고 네이버·쿠팡 형식으로 변환합니다. 옵션명은 재질·색상·호수로 고정되지 않습니다.</span></div>
+        <div class="common-option-builder" data-common-option-builder>
+          <div class="common-option-toolbar"><div><b>옵션 그룹</b><span>최대 3개 · 값은 직접 추가하거나 숫자 범위로 만들 수 있습니다.</span></div><button type="button" data-add-common-group>＋ 옵션 그룹 추가</button></div>
+          <div class="common-option-groups" data-common-option-groups></div>
+          <p class="common-option-empty" data-common-option-empty>옵션이 없는 단일 상품이면 비워 두세요. 옵션이 필요하면 ‘옵션 그룹 추가’를 누르세요.</p>
+        </div>
+        <div class="common-option-pricing">
+          <section><h3>공통 재고</h3>{% include 'erp/_workspace_field.html' with field=form.option_default_stock label='새 조합 기본 재고' %}<p>조합별 예외 재고는 마켓 탭에서 수정할 수 있습니다.</p></section>
+          <section class="naver"><h3>네이버 가격 기준</h3><div class="workspace-fields">{% include 'erp/_workspace_field.html' with field=naver_form.option_base_original_price label='기준 할인 전 가격' %}{% include 'erp/_workspace_field.html' with field=naver_form.option_base_sale_price label='기준 실제 판매가' %}</div><p>각 옵션값의 네이버 추가금 합계를 두 가격에 동일하게 더합니다.</p></section>
+          <section class="coupang"><h3>쿠팡 가격 기준</h3><div class="workspace-fields">{% include 'erp/_workspace_field.html' with field=coupang_form.option_base_original_price label='기준 할인 전 가격' %}{% include 'erp/_workspace_field.html' with field=coupang_form.option_base_sale_price label='기준 실제 판매가' %}</div><p>각 옵션값의 쿠팡 추가금 합계로 옵션별 가격을 만듭니다.</p></section>
+        </div>
+        <div class="common-option-generate"><div><small>예상 옵션 조합</small><strong data-common-option-count>0개</strong><span>기존 수동 옵션과 외부 등록번호는 삭제하지 않습니다.</span></div><button type="submit" name="workspace_action" value="generate_options">저장하고 마켓 옵션 만들기</button></div>
+        {% if common_option_count %}<details class="common-option-preview"><summary>생성된 공통 옵션 {{ common_option_count }}개 미리보기</summary><div>{% for combination in common_option_preview %}<span><b>{{ combination }}</b><small>{{ combination.option_code }}</small></span>{% endfor %}{% if common_option_count > 12 %}<span class="more">외 {{ common_option_count|add:'-12' }}개</span>{% endif %}</div></details>{% endif %}
+      </section>
+      <section class="workspace-panel wide"><header><b>5. GPT 콘텐츠 준비</b><span>미리보기 우선</span></header><div class="workspace-fields content-summary-fields">{% include 'erp/_workspace_field.html' with field=form.ai_instruction %}{% include 'erp/_workspace_field.html' with field=form.description %}</div>{% if product.detail_page_html %}<details class="workspace-detail-preview" open><summary>상세페이지 화면 미리보기</summary><div>{{ product.detail_page_html|safe }}</div></details>{% endif %}<details class="workspace-advanced html-editor"><summary>상세페이지 HTML 직접 수정 (고급)</summary><div class="workspace-fields">{% include 'erp/_workspace_field.html' with field=form.detail_page_html wide=True %}</div></details><p class="workspace-guide">평소에는 미리보기로 확인하고, 필요한 경우에만 HTML 직접 수정을 여세요.</p></section>
+      <section class="workspace-panel wide"><header><b>6. 검토 및 등록 대상</b><span>승인 후 업로드</span></header><div class="workspace-fields review-fields">{% include 'erp/_workspace_field.html' with field=form.target_channels %}{% include 'erp/_workspace_field.html' with field=form.workspace_status %}{% include 'erp/_workspace_field.html' with field=form.memo %}</div></section>
     </div>
   </div>
 
@@ -27,6 +44,98 @@
 </form>
 {% if product %}<script>
 (() => {
+  const commonBuilder = document.querySelector('[data-common-option-builder]');
+  if (commonBuilder) {
+    const blueprintField = document.querySelector('[data-option-blueprint]');
+    const groupsTarget = commonBuilder.querySelector('[data-common-option-groups]');
+    const emptyNotice = commonBuilder.querySelector('[data-common-option-empty]');
+    const countTarget = document.querySelector('[data-common-option-count]');
+    const makeId = prefix => `${prefix}-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`}`;
+    let blueprint;
+    try { blueprint = JSON.parse(blueprintField.value || '{}'); } catch (_) { blueprint = {}; }
+    blueprint.groups = Array.isArray(blueprint.groups) ? blueprint.groups : [];
+    blueprint.groups.forEach(group => {
+      group.id ||= makeId('group');
+      group.values = Array.isArray(group.values) ? group.values : [];
+      group.values.forEach(value => {
+        value.id ||= makeId('value');
+        value.adjustments ||= {naver: 0, coupang: 0};
+      });
+    });
+    const saveBlueprint = () => {
+      blueprintField.value = JSON.stringify(blueprint);
+      const count = blueprint.groups.length
+        ? blueprint.groups.reduce((total, group) => total * group.values.length, 1)
+        : 0;
+      countTarget.textContent = `${count.toLocaleString('ko-KR')}개`;
+      emptyNotice.hidden = blueprint.groups.length > 0;
+    };
+    const render = () => {
+      groupsTarget.replaceChildren();
+      blueprint.groups.forEach((group, groupIndex) => {
+        const card = document.createElement('section');
+        card.className = 'common-option-group';
+        card.innerHTML = `<header><label><span>옵션 그룹 ${groupIndex + 1}</span><input type="text" maxlength="50" placeholder="예: 사이즈, 길이, 색상"></label><button type="button" class="danger">그룹 삭제</button></header><div class="common-option-value-head"><span>옵션값</span><span>네이버 추가금</span><span>쿠팡 추가금</span><span></span></div><div class="common-option-values"></div><div class="common-option-actions"><button type="button" data-add-value>＋ 옵션값 추가</button><div><input type="number" data-range-start placeholder="시작"><span>~</span><input type="number" data-range-end placeholder="끝"><input type="text" data-range-unit placeholder="단위 (예: 호)"><button type="button" data-add-range>숫자 범위 추가</button></div></div>`;
+        const groupName = card.querySelector('header input');
+        groupName.value = group.name || '';
+        groupName.addEventListener('input', () => { group.name = groupName.value; saveBlueprint(); });
+        card.querySelector('header button').addEventListener('click', () => {
+          blueprint.groups.splice(groupIndex, 1); render();
+        });
+        const valuesTarget = card.querySelector('.common-option-values');
+        const renderValues = () => {
+          valuesTarget.replaceChildren();
+          group.values.forEach((value, valueIndex) => {
+            const row = document.createElement('div');
+            row.className = 'common-option-value';
+            row.innerHTML = '<input type="text" maxlength="100" placeholder="옵션값"><label><input type="number" step="100" value="0"><span>원</span></label><label><input type="number" step="100" value="0"><span>원</span></label><button type="button" aria-label="옵션값 삭제">×</button>';
+            const inputs = row.querySelectorAll('input');
+            inputs[0].value = value.label || '';
+            inputs[1].value = value.adjustments?.naver || 0;
+            inputs[2].value = value.adjustments?.coupang || 0;
+            inputs[0].addEventListener('input', () => { value.label = inputs[0].value; saveBlueprint(); });
+            inputs[1].addEventListener('input', () => { value.adjustments.naver = Number(inputs[1].value || 0); saveBlueprint(); });
+            inputs[2].addEventListener('input', () => { value.adjustments.coupang = Number(inputs[2].value || 0); saveBlueprint(); });
+            row.querySelector('button').addEventListener('click', () => { group.values.splice(valueIndex, 1); render(); });
+            valuesTarget.append(row);
+          });
+        };
+        const addValue = label => group.values.push({
+          id: makeId('value'), label, adjustments: {naver: 0, coupang: 0}
+        });
+        card.querySelector('[data-add-value]').addEventListener('click', () => { addValue(''); render(); });
+        card.querySelector('[data-add-range]').addEventListener('click', () => {
+          const start = Number(card.querySelector('[data-range-start]').value);
+          const end = Number(card.querySelector('[data-range-end]').value);
+          const unit = card.querySelector('[data-range-unit]').value.trim();
+          if (!Number.isInteger(start) || !Number.isInteger(end) || start > end || end - start > 500) {
+            alert('시작·끝 숫자를 확인해 주세요. 한 번에 최대 501개까지 만들 수 있습니다.');
+            return;
+          }
+          const existing = new Set(group.values.map(value => value.label));
+          for (let number = start; number <= end; number += 1) {
+            const label = `${number}${unit}`;
+            if (!existing.has(label)) addValue(label);
+          }
+          render();
+        });
+        renderValues();
+        groupsTarget.append(card);
+      });
+      saveBlueprint();
+    };
+    commonBuilder.querySelector('[data-add-common-group]').addEventListener('click', () => {
+      if (blueprint.groups.length >= 3) {
+        alert('네이버·쿠팡에 함께 전송할 공통 옵션 그룹은 최대 3개입니다.');
+        return;
+      }
+      blueprint.groups.push({id: makeId('group'), name: '', values: [{
+        id: makeId('value'), label: '', adjustments: {naver: 0, coupang: 0}
+      }]});
+      render();
+    });
+    render();
+  }
   const tabs = [...document.querySelectorAll('[data-workspace-tab]')];
   const panels = [...document.querySelectorAll('[data-workspace-panel]')];
   const show = key => {
@@ -125,11 +234,16 @@
     });
   });
   const syncOptionGroups = prefix => {
-    [1, 2].forEach(number => {
+    [1, 2, 3].forEach(number => {
       const fields = [...document.querySelectorAll(`[name^="${prefix}-"][name$="-option_name_${number}"]`)];
       if (!fields.length) return;
       const value = fields[0].value;
-      fields.slice(1).forEach(field => field.value = value);
+      fields.slice(1).forEach(field => {
+        const row = field.closest('.workspace-option-row');
+        const optionValue = row?.querySelector('[name$="-option_value_1"]');
+        const idField = row?.querySelector('[name$="-id"]');
+        if (optionValue?.value || idField?.value) field.value = value;
+      });
     });
   };
   document.querySelectorAll('[data-option-group-builder]').forEach(builder => {

@@ -730,6 +730,8 @@ class OpenMarketProduct(models.Model):
     description = models.TextField("상품 요약 설명", blank=True)
     detail_page_html = models.TextField("상세페이지 HTML", blank=True)
     common_attributes = models.JSONField("공통 상품 속성", default=dict, blank=True)
+    option_blueprint = models.JSONField("공통 옵션 설계도", default=dict, blank=True)
+    option_default_stock = models.PositiveIntegerField("공통 옵션 기본 재고", default=999)
     default_weight = models.DecimalField("기본 중량(g)", max_digits=12, decimal_places=3, null=True, blank=True)
     pricing_material = models.CharField("가격 계산 재질", max_length=10, choices=PRICING_MATERIAL_CHOICES, default="gold")
     silver_price_per_gram = models.DecimalField("은 원가(원/g)", max_digits=12, decimal_places=0, default=0)
@@ -766,6 +768,12 @@ class OpenMarketChannelSetting(models.Model):
     category_code = models.CharField("채널 카테고리 코드", max_length=100, blank=True)
     category_name = models.CharField("채널 카테고리 경로", max_length=500, blank=True)
     channel_product_name = models.CharField("채널 전용 상품명", max_length=200, blank=True)
+    option_base_original_price = models.DecimalField(
+        "옵션 기준 할인 전 가격", max_digits=14, decimal_places=0, null=True, blank=True,
+    )
+    option_base_sale_price = models.DecimalField(
+        "옵션 기준 실제 판매가", max_digits=14, decimal_places=0, null=True, blank=True,
+    )
     delivery_method = models.CharField("배송 방식", max_length=50, blank=True, default="DELIVERY")
     delivery_company_code = models.CharField("택배사 코드", max_length=100, blank=True)
     outbound_location_code = models.CharField("출고지 코드", max_length=100, blank=True)
@@ -875,6 +883,35 @@ class OpenMarketVariant(models.Model):
         return {"gold_cost": material_cost, "total_cost": total_cost, "sale_price": sale_price}
 
 
+class OpenMarketOptionCombination(models.Model):
+    """A channel-neutral option combination generated from a product blueprint."""
+
+    product = models.ForeignKey(
+        OpenMarketProduct, on_delete=models.CASCADE, related_name="option_combinations",
+        verbose_name="공통 상품",
+    )
+    option_key = models.CharField("옵션 조합 키", max_length=64)
+    option_code = models.CharField("ERP 옵션코드", max_length=100, unique=True)
+    option_values = models.JSONField("공통 옵션값", default=list, blank=True)
+    internal_variant = models.ForeignKey(
+        OpenMarketVariant, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="common_option_combinations", verbose_name="원가 계산 기준",
+    )
+    stock_quantity = models.PositiveIntegerField("공통 재고", default=999)
+    active = models.BooleanField("사용", default=True)
+    sort_order = models.PositiveIntegerField("표시 순서", default=0)
+
+    class Meta:
+        ordering = ["sort_order", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["product", "option_key"], name="unique_common_option_combination"),
+        ]
+
+    def __str__(self):
+        values = [str(row.get("value", "")) for row in self.option_values if row.get("value")]
+        return " / ".join(values) or self.option_code
+
+
 class OpenMarketChannelOption(models.Model):
     setting = models.ForeignKey(
         OpenMarketChannelSetting, on_delete=models.CASCADE, related_name="selling_options",
@@ -884,6 +921,10 @@ class OpenMarketChannelOption(models.Model):
         OpenMarketVariant, on_delete=models.SET_NULL, null=True, blank=True,
         related_name="channel_options", verbose_name="연결 내부 원가 기준",
     )
+    common_combination = models.ForeignKey(
+        OpenMarketOptionCombination, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="channel_options", verbose_name="공통 옵션 조합",
+    )
     seller_sku = models.CharField("채널 판매자 SKU", max_length=100, blank=True)
     external_option_id = models.CharField("마켓 옵션 ID", max_length=120, blank=True)
     external_item_id = models.CharField("마켓 판매자 옵션 ID", max_length=120, blank=True)
@@ -891,6 +932,8 @@ class OpenMarketChannelOption(models.Model):
     option_value_1 = models.CharField("옵션값 1", max_length=100)
     option_name_2 = models.CharField("옵션명 2", max_length=50, blank=True)
     option_value_2 = models.CharField("옵션값 2", max_length=100, blank=True)
+    option_name_3 = models.CharField("옵션명 3", max_length=50, blank=True)
+    option_value_3 = models.CharField("옵션값 3", max_length=100, blank=True)
     original_price = models.DecimalField(
         "정상가", max_digits=14, decimal_places=0, null=True, blank=True,
         help_text="할인 전 정상가입니다. 비워 두면 판매가와 같게 전송합니다.",
@@ -899,11 +942,21 @@ class OpenMarketChannelOption(models.Model):
     stock_quantity = models.PositiveIntegerField("채널 재고", default=999)
     active = models.BooleanField("등록 사용", default=True)
     sort_order = models.PositiveSmallIntegerField("표시 순서", default=0)
+    generated_from_common = models.BooleanField("공통 옵션에서 생성", default=False)
+    manual_override = models.BooleanField(
+        "자동 가격 계산 제외", default=False,
+        help_text="공통 옵션을 다시 적용해도 이 조합의 가격과 재고를 유지합니다.",
+    )
 
     class Meta:
         ordering = ["sort_order", "id"]
         constraints = [
             models.UniqueConstraint(fields=["setting", "seller_sku"], name="unique_channel_seller_sku"),
+            models.UniqueConstraint(
+                fields=["setting", "common_combination"],
+                condition=models.Q(common_combination__isnull=False),
+                name="unique_channel_common_combination",
+            ),
         ]
 
     def __str__(self):
