@@ -183,6 +183,18 @@ def sync_common_options(product):
             )
             continue
 
+        is_uploaded = bool(setting.external_product_id or setting.external_channel_product_id)
+        if is_uploaded:
+            result["warnings"].append(
+                f"{setting.get_channel_display()}: 이미 외부 등록된 상품입니다. "
+                "새 공통 옵션은 기존 판매상품과 섞이지 않도록 비활성 초안으로 저장했습니다."
+            )
+        else:
+            setting.selling_options.filter(
+                common_combination__isnull=True, generated_from_common=False,
+                external_option_id="", external_item_id="",
+            ).update(active=False)
+
         projected_prices = []
         changed = 0
         for combination in combinations:
@@ -198,6 +210,7 @@ def sync_common_options(product):
                 )
                 continue
             projected_prices.append(original_price)
+            generated_active = combination.active and not is_uploaded
             option, created = OpenMarketChannelOption.objects.get_or_create(
                 setting=setting, common_combination=combination,
                 defaults={
@@ -206,7 +219,7 @@ def sync_common_options(product):
                     "sale_price": sale_price, "original_price": original_price,
                     "stock_quantity": combination.stock_quantity,
                     "sort_order": combination.sort_order,
-                    "active": combination.active, "generated_from_common": True,
+                    "active": generated_active, "generated_from_common": True,
                     "internal_variant": combination.internal_variant,
                 },
             )
@@ -218,7 +231,7 @@ def sync_common_options(product):
             option.option_name_3, option.option_value_3 = rows[2].get("group", ""), rows[2].get("value", "")
             option.generated_from_common = True
             option.sort_order = combination.sort_order
-            option.active = combination.active
+            option.active = generated_active
             option.internal_variant = combination.internal_variant
             if not option.manual_override:
                 option.original_price = original_price

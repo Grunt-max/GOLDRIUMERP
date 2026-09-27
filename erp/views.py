@@ -224,10 +224,28 @@ def marketplace_workspace_edit(request, pk=None):
             channel_forms[channel] = OpenMarketChannelSettingForm(
                 request.POST or None, instance=setting, prefix=f"workspace-{channel}"
             )
-            channel_option_formsets[channel] = OpenMarketChannelOptionFormSet(
+            option_formset = OpenMarketChannelOptionFormSet(
                 request.POST or None, instance=setting, prefix=f"workspace-{channel}-options",
                 queryset=setting.selling_options.select_related("internal_variant", "common_combination"),
             )
+            manual_group_names = ["", "", ""]
+            for option_form in option_formset.forms:
+                if option_form.instance.common_combination_id:
+                    continue
+                if not option_form.instance.pk and not option_form["option_value_1"].value():
+                    continue
+                candidate = [
+                    (option_form[f"option_name_{number}"].value() or "").strip()
+                    for number in (1, 2, 3)
+                ]
+                if any(candidate):
+                    manual_group_names = candidate
+                    break
+            option_formset.manual_group_1, option_formset.manual_group_2, option_formset.manual_group_3 = manual_group_names
+            option_formset.has_common_options = any(
+                option_form.instance.common_combination_id for option_form in option_formset.forms
+            )
+            channel_option_formsets[channel] = option_formset
     channel_forms_valid = all(channel_form.is_valid() for channel_form in channel_forms.values())
     channel_options_valid = all(formset.is_valid() for formset in channel_option_formsets.values())
     if request.method == "POST" and form.is_valid() and channel_forms_valid and channel_options_valid:

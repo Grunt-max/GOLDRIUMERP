@@ -102,7 +102,7 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertContains(response, "마켓별 등록 정보 입력")
         self.assertContains(response, "상품정보고시 상세")
         self.assertContains(response, "네이버 판매중지 등록")
-        self.assertContains(response, "고객에게 보일 옵션명")
+        self.assertContains(response, "수동 옵션명 (필요한 경우만)")
         self.assertContains(response, "첫 번째 옵션값")
         self.assertContains(response, "할인 전 가격")
         self.assertContains(response, "귀금속·보석·시계류 정보")
@@ -110,9 +110,19 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertContains(response, "허용 옵션 추가금")
         self.assertContains(response, 'class="workspace-field"', html=False)
         self.assertContains(response, 'class="option-group-builder"', html=False)
+        self.assertContains(response, 'data-manual-option-group="1"', html=False)
+        self.assertContains(response, 'data-option-source="manual"', html=False)
+        self.assertContains(
+            response, '.workspace-option-row[data-option-source="manual"]', html=False,
+        )
         self.assertContains(response, 'name="workspace-naver-category_code"', html=False)
         self.assertContains(response, "카테고리 찾기")
         self.assertContains(response, 'name="workspace-naver-category_name"', html=False)
+        content = response.content.decode()
+        self.assertLess(
+            content.index('<div class="common-option-pricing">'),
+            content.index('<div class="common-option-builder"'),
+        )
         naver_setting = product.channel_settings.get(channel="naver")
         naver_setting.upload_status = "failed"
         naver_setting.last_upload_error = "과거 오류"
@@ -356,7 +366,36 @@ class MarketplaceReadOnlyTests(TestCase):
 
         premium_long.refresh_from_db()
         self.assertEqual(premium_long.sale_price, Decimal("199000"))
-        self.assertTrue(OpenMarketChannelOption.objects.filter(pk=manual.pk, active=True).exists())
+        self.assertTrue(OpenMarketChannelOption.objects.filter(pk=manual.pk, active=False).exists())
+
+    def test_common_options_for_registered_product_are_inactive_drafts(self):
+        from erp.marketplace_options import sync_common_options
+
+        product = OpenMarketProduct.objects.create(
+            code="REGISTERED-001", name="이미 등록된 상품",
+            option_blueprint={"groups": [{
+                "id": "g-size", "name": "길이", "values": [
+                    {"id": "v-42", "label": "42cm", "adjustments": {"naver": 0, "coupang": 0}},
+                    {"id": "v-45", "label": "45cm", "adjustments": {"naver": 10000, "coupang": 10000}},
+                ],
+            }]},
+        )
+        setting = OpenMarketChannelSetting.objects.create(
+            product=product, channel="naver", external_product_id="13715393051",
+            option_base_original_price=200000, option_base_sale_price=180000,
+        )
+        legacy = OpenMarketChannelOption.objects.create(
+            setting=setting, option_name_1="기존 옵션", option_value_1="기존 값",
+            original_price=200000, sale_price=180000, active=True,
+        )
+
+        result = sync_common_options(product)
+
+        self.assertEqual(setting.selling_options.filter(generated_from_common=True).count(), 2)
+        self.assertFalse(setting.selling_options.filter(generated_from_common=True, active=True).exists())
+        legacy.refresh_from_db()
+        self.assertTrue(legacy.active)
+        self.assertTrue(any("비활성 초안" in warning for warning in result["warnings"]))
 
     @patch("erp.marketplace_publish._json_request")
     @patch("erp.marketplace_publish._naver_upload_image", return_value="https://example.com/product.jpg")
@@ -746,6 +785,35 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertEqual(jewellery["returnCostReason"], "0")
         self.assertEqual(jewellery["legacyField"], "보존")
         self.assertNotIn("bandMaterial", jewellery)
+
+    def test_channel_option_base_prices_must_be_a_complete_valid_pair(self):
+        from erp.forms import OpenMarketChannelSettingForm
+
+        product = OpenMarketProduct.objects.create(code="PRICE-PAIR", name="가격 기준 검증")
+        setting = OpenMarketChannelSetting.objects.create(product=product, channel="coupang")
+        base_data = {
+            "category_code": "", "category_name": "", "channel_product_name": "",
+            "delivery_method": "DELIVERY", "delivery_company_code": "",
+            "outbound_location_code": "", "return_center_code": "",
+            "delivery_fee_type": "FREE", "delivery_fee": "0", "return_fee": "0",
+            "notice_type": "JEWELLERY", "notice_data": "{}", "extra_attributes": "{}",
+            "naver_origin_status": "SUSPENSION", "naver_channel_display_status": "SUSPENSION",
+            "after_service_phone": "", "after_service_guide": "", "origin_area_code": "00",
+            "origin_area_content": "", "minor_purchasable": "on",
+        }
+        missing_sale = OpenMarketChannelSettingForm(
+            data={**base_data, "option_base_original_price": "150000", "option_base_sale_price": ""},
+            instance=setting,
+        )
+        self.assertFalse(missing_sale.is_valid())
+        self.assertIn("option_base_sale_price", missing_sale.errors)
+
+        reversed_prices = OpenMarketChannelSettingForm(
+            data={**base_data, "option_base_original_price": "150000", "option_base_sale_price": "180000"},
+            instance=setting,
+        )
+        self.assertFalse(reversed_prices.is_valid())
+        self.assertIn("option_base_original_price", reversed_prices.errors)
 
     def test_naver_option_price_bounds_follow_official_price_tiers(self):
         from erp.marketplace_rules import naver_option_price_bounds, naver_option_price_error

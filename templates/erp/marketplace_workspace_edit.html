@@ -16,16 +16,17 @@
       <section class="workspace-panel wide common-option-panel">
         <header><div><small>4. 공통 판매 옵션</small><b>옵션 설계도와 마켓별 가격 기준</b></div><span>어떤 상품에도 사용</span></header>
         {{ form.option_blueprint }}{{ form.option_blueprint.errors }}
-        <div class="common-option-intro"><b>옵션 그룹과 값을 한 번만 만드세요.</b><span>ERP가 모든 조합을 만들고 네이버·쿠팡 형식으로 변환합니다. 옵션명은 재질·색상·호수로 고정되지 않습니다.</span></div>
-        <div class="common-option-builder" data-common-option-builder>
-          <div class="common-option-toolbar"><div><b>옵션 그룹</b><span>최대 3개 · 값은 직접 추가하거나 숫자 범위로 만들 수 있습니다.</span></div><button type="button" data-add-common-group>＋ 옵션 그룹 추가</button></div>
-          <div class="common-option-groups" data-common-option-groups></div>
-          <p class="common-option-empty" data-common-option-empty>옵션이 없는 단일 상품이면 비워 두세요. 옵션이 필요하면 ‘옵션 그룹 추가’를 누르세요.</p>
-        </div>
+        <div class="common-option-intro"><b>① 가격 기준부터 입력하세요.</b><span>그 다음 옵션 그룹과 값을 만들면 ERP가 모든 조합을 계산해 네이버·쿠팡 형식으로 변환합니다.</span></div>
         <div class="common-option-pricing">
           <section><h3>공통 재고</h3>{% include 'erp/_workspace_field.html' with field=form.option_default_stock label='새 조합 기본 재고' %}<p>조합별 예외 재고는 마켓 탭에서 수정할 수 있습니다.</p></section>
-          <section class="naver"><h3>네이버 가격 기준</h3><div class="workspace-fields">{% include 'erp/_workspace_field.html' with field=naver_form.option_base_original_price label='기준 할인 전 가격' %}{% include 'erp/_workspace_field.html' with field=naver_form.option_base_sale_price label='기준 실제 판매가' %}</div><p>각 옵션값의 네이버 추가금 합계를 두 가격에 동일하게 더합니다.</p></section>
-          <section class="coupang"><h3>쿠팡 가격 기준</h3><div class="workspace-fields">{% include 'erp/_workspace_field.html' with field=coupang_form.option_base_original_price label='기준 할인 전 가격' %}{% include 'erp/_workspace_field.html' with field=coupang_form.option_base_sale_price label='기준 실제 판매가' %}</div><p>각 옵션값의 쿠팡 추가금 합계로 옵션별 가격을 만듭니다.</p></section>
+          <section class="naver"><h3>네이버 가격 기준</h3><div class="workspace-fields">{% include 'erp/_workspace_field.html' with field=naver_form.option_base_original_price label='기준 할인 전 가격' %}{% include 'erp/_workspace_field.html' with field=naver_form.option_base_sale_price label='기준 실제 판매가' %}</div><p>선택한 모든 옵션값의 네이버 추가금을 합산해 두 가격에 똑같이 더합니다.</p></section>
+          <section class="coupang"><h3>쿠팡 가격 기준</h3><div class="workspace-fields">{% include 'erp/_workspace_field.html' with field=coupang_form.option_base_original_price label='기준 할인 전 가격' %}{% include 'erp/_workspace_field.html' with field=coupang_form.option_base_sale_price label='기준 실제 판매가' %}</div><p>선택한 모든 옵션값의 쿠팡 추가금을 합산해 옵션별 가격을 만듭니다.</p></section>
+        </div>
+        <p class="common-option-price-formula">계산 예시 · 18K 추가금 78,000원 + 22cm 추가금 90,000원 = 해당 조합에 총 168,000원 추가</p>
+        <div class="common-option-builder" data-common-option-builder>
+          <div class="common-option-toolbar"><div><b>② 옵션 그룹</b><span>최대 3개 · 값은 직접 추가하거나 숫자 범위로 만들 수 있습니다. 옵션명은 재질·색상·호수로 고정되지 않습니다.</span></div><button type="button" data-add-common-group>＋ 옵션 그룹 추가</button></div>
+          <div class="common-option-groups" data-common-option-groups></div>
+          <p class="common-option-empty" data-common-option-empty>옵션이 없는 단일 상품이면 비워 두세요. 옵션이 필요하면 ‘옵션 그룹 추가’를 누르세요.</p>
         </div>
         <div class="common-option-generate"><div><small>예상 옵션 조합</small><strong data-common-option-count>0개</strong><span>기존 수동 옵션과 외부 등록번호는 삭제하지 않습니다.</span></div><button type="submit" name="workspace_action" value="generate_options">저장하고 마켓 옵션 만들기</button></div>
         {% if common_option_count %}<details class="common-option-preview"><summary>생성된 공통 옵션 {{ common_option_count }}개 미리보기</summary><div>{% for combination in common_option_preview %}<span><b>{{ combination }}</b><small>{{ combination.option_code }}</small></span>{% endfor %}{% if common_option_count > 12 %}<span class="more">외 {{ common_option_count|add:'-12' }}개</span>{% endif %}</div></details>{% endif %}
@@ -234,15 +235,17 @@
     });
   });
   const syncOptionGroups = prefix => {
+    const builder = document.querySelector(`[data-option-group-builder="${prefix}"]`);
     [1, 2, 3].forEach(number => {
-      const fields = [...document.querySelectorAll(`[name^="${prefix}-"][name$="-option_name_${number}"]`)];
-      if (!fields.length) return;
-      const value = fields[0].value;
-      fields.slice(1).forEach(field => {
+      const source = builder?.querySelector(`[data-manual-option-group="${number}"]`);
+      const fields = [...document.querySelectorAll(
+        `.workspace-option-row[data-option-source="manual"] [name^="${prefix}-"][name$="-option_name_${number}"]`
+      )];
+      fields.forEach(field => {
         const row = field.closest('.workspace-option-row');
         const optionValue = row?.querySelector('[name$="-option_value_1"]');
         const idField = row?.querySelector('[name$="-id"]');
-        if (optionValue?.value || idField?.value) field.value = value;
+        if (optionValue?.value || idField?.value) field.value = source?.value || '';
       });
     });
   };

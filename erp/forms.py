@@ -153,6 +153,13 @@ class OpenMarketChannelSettingForm(forms.ModelForm):
 
     def clean(self):
         cleaned = super().clean()
+        base_original = cleaned.get("option_base_original_price")
+        base_sale = cleaned.get("option_base_sale_price")
+        if (base_original is None) != (base_sale is None):
+            missing_field = "option_base_original_price" if base_original is None else "option_base_sale_price"
+            self.add_error(missing_field, "할인 전 가격과 실제 판매가를 함께 입력해 주세요.")
+        elif base_original is not None and base_original < base_sale:
+            self.add_error("option_base_original_price", "기준 할인 전 가격은 기준 실제 판매가보다 낮을 수 없습니다.")
         if not self.instance or self.instance.channel != "naver" or cleaned.get("notice_type") != "JEWELLERY":
             return cleaned
         raw_notice = cleaned.get("notice_data") if isinstance(cleaned.get("notice_data"), dict) else {}
