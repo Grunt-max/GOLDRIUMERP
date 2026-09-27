@@ -38,6 +38,92 @@
   const invalidPanel = panels.find(panel => panel.querySelector('.errorlist,.workspace-errors'));
   const requested = location.hash.slice(1);
   show(invalidPanel?.dataset.workspacePanel || (['common','naver','coupang'].includes(requested) ? requested : 'common'));
+  document.querySelectorAll('[data-category-picker]').forEach(picker => {
+    const query = picker.querySelector('[data-category-query]');
+    const searchButton = picker.querySelector('[data-category-search]');
+    const results = picker.querySelector('[data-category-results]');
+    const codeInput = picker.querySelector('[name$="-category_code"]');
+    const nameInput = picker.querySelector('[name$="-category_name"]');
+    const codeLabel = picker.querySelector('[data-category-code]');
+    const nameLabel = picker.querySelector('[data-category-name]');
+    const current = picker.querySelector('.category-picker-current');
+    const showMessage = (message, isError = false) => {
+      results.replaceChildren();
+      const notice = document.createElement('p');
+      notice.className = isError ? 'category-result-message error' : 'category-result-message';
+      notice.textContent = message;
+      results.append(notice);
+      results.hidden = false;
+    };
+    const selectCategory = category => {
+      codeInput.value = category.code;
+      nameInput.value = category.path || category.name;
+      codeLabel.textContent = category.code;
+      nameLabel.textContent = category.path || category.name;
+      current.classList.add('selected');
+      results.hidden = true;
+    };
+    const search = async () => {
+      const keyword = query.value.trim();
+      if (keyword.length < 2) {
+        showMessage('상품명 또는 카테고리명을 두 글자 이상 입력해 주세요.', true);
+        return;
+      }
+      searchButton.disabled = true;
+      searchButton.textContent = '조회 중…';
+      showMessage(`${picker.dataset.channel === 'naver' ? '네이버' : '쿠팡'} 카테고리를 불러오고 있습니다.`);
+      try {
+        const response = await fetch(`${picker.dataset.searchUrl}?q=${encodeURIComponent(keyword)}`, {
+          headers: {'X-Requested-With': 'XMLHttpRequest'}
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || '카테고리를 불러오지 못했습니다.');
+        results.replaceChildren();
+        if (!payload.results.length) {
+          showMessage('일치하는 카테고리가 없습니다. 상품 종류를 더 구체적으로 입력해 주세요.');
+          return;
+        }
+        payload.results.forEach(category => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'category-result';
+          const title = document.createElement('strong');
+          title.textContent = category.path || category.name;
+          const meta = document.createElement('span');
+          meta.textContent = `코드 ${category.code}`;
+          button.append(title, meta);
+          if (category.recommended) {
+            const badge = document.createElement('em');
+            badge.textContent = '쿠팡 추천';
+            button.append(badge);
+          }
+          button.addEventListener('click', () => selectCategory(category));
+          results.append(button);
+        });
+        results.hidden = false;
+      } catch (error) {
+        showMessage(error.message || '카테고리를 불러오지 못했습니다.', true);
+      } finally {
+        searchButton.disabled = false;
+        searchButton.textContent = '카테고리 찾기';
+      }
+    };
+    searchButton.addEventListener('click', search);
+    query.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        search();
+      }
+    });
+    codeInput.addEventListener('input', () => {
+      if (codeInput.value !== codeLabel.textContent) {
+        codeLabel.textContent = codeInput.value || '-';
+        nameInput.value = '';
+        nameLabel.textContent = '직접 입력한 코드 · 저장 전 카테고리를 확인하세요.';
+        current.classList.toggle('selected', Boolean(codeInput.value));
+      }
+    });
+  });
   const syncOptionGroups = prefix => {
     [1, 2].forEach(number => {
       const fields = [...document.querySelectorAll(`[name^="${prefix}-"][name$="-option_name_${number}"]`)];

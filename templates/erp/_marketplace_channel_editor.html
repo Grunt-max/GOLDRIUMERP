@@ -10,8 +10,25 @@
     <div class="channel-setting-groups">
       <section class="channel-setting-group primary-group">
         <h3>상품 기본정보</h3>
+        <div class="category-picker" data-category-picker data-channel="{{ channel_key }}" data-search-url="{% url 'erp:marketplace_category_search' channel_key %}">
+          <div class="category-picker-current{% if channel_form.category_code.value %} selected{% endif %}">
+            <small>선택된 {{ channel_label }} 카테고리</small>
+            <strong data-category-name>{{ channel_form.category_name.value|default:'카테고리를 검색해 선택해 주세요.' }}</strong>
+            <span>카테고리 코드 <b data-category-code>{{ channel_form.category_code.value|default:'-' }}</b></span>
+          </div>
+          <div class="category-search-controls">
+            <label><span>상품명 또는 카테고리명</span><input type="search" value="{{ channel_form.channel_product_name.value|default:product.name }}" data-category-query autocomplete="off" placeholder="예: 여성 골드 목걸이"></label>
+            <button type="button" data-category-search>카테고리 찾기</button>
+          </div>
+          <p class="category-search-guide">{% if channel_key == 'naver' %}네이버의 등록 가능한 최종 카테고리에서 검색합니다.{% else %}쿠팡 추천 결과와 사용 중인 카테고리 목록에서 검색합니다. 추천 결과는 최종 확인 후 선택하세요.{% endif %}</p>
+          <div class="category-search-results" data-category-results hidden></div>
+          {{ channel_form.category_name }}{{ channel_form.category_name.errors }}
+          <details class="category-code-advanced">
+            <summary>카테고리 코드 직접 입력 (고급)</summary>
+            <div class="workspace-fields">{% include 'erp/_workspace_field.html' with field=channel_form.category_code label='카테고리 코드' wide=True %}</div>
+          </details>
+        </div>
         <div class="workspace-fields channel-product-fields">
-          {% include 'erp/_workspace_field.html' with field=channel_form.category_code label='카테고리 코드' %}
           {% include 'erp/_workspace_field.html' with field=channel_form.channel_product_name label='채널 전용 상품명' %}
           {% if channel_key == 'naver' %}
             {% include 'erp/_workspace_field.html' with field=channel_form.naver_origin_status label='판매 상태' %}

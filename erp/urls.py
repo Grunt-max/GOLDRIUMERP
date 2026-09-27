@@ -8,6 +8,7 @@ urlpatterns = [
     path("marketplaces/workspace/", views.marketplace_workspace, name="marketplace_workspace"),
     path("marketplaces/workspace/new/", views.marketplace_workspace_edit, name="marketplace_workspace_create"),
     path("marketplaces/workspace/<int:pk>/", views.marketplace_workspace_edit, name="marketplace_workspace_edit"),
+    path("marketplaces/workspace/categories/<str:channel>/", views.marketplace_category_search, name="marketplace_category_search"),
     path("marketplaces/workspace/<int:pk>/generate/", views.marketplace_workspace_generate, name="marketplace_workspace_generate"),
     path("marketplaces/workspace/<int:pk>/publish/<str:channel>/", views.marketplace_workspace_publish, name="marketplace_workspace_publish"),
     path("marketplaces/workspace/<int:pk>/simulate/<str:channel>/", views.marketplace_workspace_simulate, name="marketplace_workspace_simulate"),

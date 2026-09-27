@@ -109,6 +109,8 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertContains(response, 'class="workspace-field"', html=False)
         self.assertContains(response, 'class="option-group-builder"', html=False)
         self.assertContains(response, 'name="workspace-naver-category_code"', html=False)
+        self.assertContains(response, "카테고리 찾기")
+        self.assertContains(response, 'name="workspace-naver-category_name"', html=False)
         naver_setting = product.channel_settings.get(channel="naver")
         naver_setting.upload_status = "failed"
         naver_setting.last_upload_error = "과거 오류"
@@ -123,6 +125,7 @@ class MarketplaceReadOnlyTests(TestCase):
             prefix = f"workspace-{channel}"
             data.update({
                 f"{prefix}-category_code": "50004168" if channel == "naver" else "71588",
+                f"{prefix}-category_name": "패션잡화 > 주얼리 > 목걸이" if channel == "naver" else "목걸이",
                 f"{prefix}-channel_product_name": f"{channel} 직접 작성명",
                 f"{prefix}-delivery_method": "DELIVERY", f"{prefix}-delivery_company_code": "CJGLS",
                 f"{prefix}-outbound_location_code": "123", f"{prefix}-return_center_code": "456",
@@ -144,9 +147,31 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertRedirects(response, reverse("erp:marketplace_workspace_edit", args=[product.pk]))
         self.assertEqual(product.channel_settings.get(channel="naver").channel_product_name, "naver 직접 작성명")
         self.assertEqual(product.channel_settings.get(channel="coupang").category_code, "71588")
+        self.assertEqual(product.channel_settings.get(channel="naver").category_name, "패션잡화 > 주얼리 > 목걸이")
         naver_setting.refresh_from_db()
         self.assertEqual(naver_setting.upload_status, "")
         self.assertEqual(naver_setting.last_upload_error, "")
+
+    @patch("erp.views.search_marketplace_categories")
+    def test_workspace_category_search_returns_selectable_results(self, search_categories):
+        search_categories.return_value = [{
+            "code": "50004168", "name": "목걸이",
+            "path": "패션잡화 > 주얼리 > 목걸이", "recommended": False,
+        }]
+
+        response = self.client.get(
+            reverse("erp:marketplace_category_search", args=["naver"]), {"q": "골드 목걸이"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["results"][0]["code"], "50004168")
+        search_categories.assert_called_once_with("naver", "골드 목걸이")
+
+    def test_workspace_category_search_rejects_short_query(self):
+        response = self.client.get(
+            reverse("erp:marketplace_category_search", args=["naver"]), {"q": "금"}
+        )
+        self.assertEqual(response.status_code, 400)
 
     def test_workspace_registered_channel_shows_compact_completed_state(self):
         product = OpenMarketProduct.objects.create(code="UPLOADED-001", name="등록 완료 상품")
@@ -703,3 +728,60 @@ class MarketplaceReadOnlyTests(TestCase):
         self.assertEqual(body["grant_type"], ["client_credentials"])
         self.assertEqual(body["type"], ["SELF"])
         self.assertEqual(body["client_secret_sign"], ["YmNyeXB0LXJlc3VsdCsv"])
+
+
+class MarketplaceCategoryApiTests(TestCase):
+    def setUp(self):
+        from erp import marketplaces
+        marketplaces._CATEGORY_CACHE.clear()
+
+    @patch.dict(os.environ, {
+        "NAVER_COMMERCE_CLIENT_ID": "client-id",
+        "NAVER_COMMERCE_CLIENT_SECRET": "client-secret",
+    })
+    @patch("erp.marketplaces._json_request")
+    @patch("erp.marketplaces._naver_token", return_value="token")
+    def test_naver_leaf_categories_are_normalized(self, _token, request_api):
+        from erp.marketplaces import fetch_naver_categories
+        request_api.return_value = [
+            {"id": "50004168", "name": "목걸이", "wholeCategoryName": "패션잡화>주얼리>목걸이", "last": True},
+            {"id": "50000000", "name": "주얼리", "wholeCategoryName": "패션잡화>주얼리", "last": False},
+        ]
+
+        rows = fetch_naver_categories()
+
+        self.assertEqual(rows, [{
+            "code": "50004168", "name": "목걸이",
+            "path": "패션잡화>주얼리>목걸이", "recommended": False,
+        }])
+        self.assertIn("last=true", request_api.call_args.args[0])
+
+    @patch.dict(os.environ, {
+        "COUPANG_ACCESS_KEY": "access", "COUPANG_SECRET_KEY": "secret", "COUPANG_VENDOR_ID": "vendor",
+    })
+    @patch("erp.marketplaces._coupang_headers", return_value={"Authorization": "signed"})
+    @patch("erp.marketplaces._json_request")
+    def test_coupang_active_categories_are_normalized(self, request_api, _headers):
+        from erp.marketplaces import fetch_coupang_categories
+        request_api.return_value = {"code": "SUCCESS", "data": [
+            {"displayCategoryCode": 71588, "name": "목걸이", "status": "ACTIVE"},
+            {"displayCategoryCode": 71589, "name": "중지 분류", "status": "DISABLED"},
+        ]}
+
+        rows = fetch_coupang_categories()
+
+        self.assertEqual(rows, [{
+            "code": "71588", "name": "목걸이", "path": "목걸이", "recommended": False,
+        }])
+
+    @patch("erp.marketplaces.fetch_naver_categories")
+    def test_product_name_search_ignores_material_words(self, categories):
+        from erp.marketplaces import search_marketplace_categories
+        categories.return_value = [
+            {"code": "1", "name": "목걸이", "path": "패션잡화>주얼리>목걸이", "recommended": False},
+            {"code": "2", "name": "귀걸이", "path": "패션잡화>주얼리>귀걸이", "recommended": False},
+        ]
+
+        rows = search_marketplace_categories("naver", "14K 18K ORO-362 데일리 골드 목걸이")
+
+        self.assertEqual([row["code"] for row in rows], ["1"])

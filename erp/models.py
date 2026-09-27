@@ -764,6 +764,7 @@ class OpenMarketChannelSetting(models.Model):
     product = models.ForeignKey(OpenMarketProduct, on_delete=models.CASCADE, related_name="channel_settings")
     channel = models.CharField("채널", max_length=20, choices=CHANNEL_CHOICES)
     category_code = models.CharField("채널 카테고리 코드", max_length=100, blank=True)
+    category_name = models.CharField("채널 카테고리 경로", max_length=500, blank=True)
     channel_product_name = models.CharField("채널 전용 상품명", max_length=200, blank=True)
     delivery_method = models.CharField("배송 방식", max_length=50, blank=True, default="DELIVERY")
     delivery_company_code = models.CharField("택배사 코드", max_length=100, blank=True)

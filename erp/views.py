@@ -21,7 +21,7 @@ from .gold_prices import collect_gold_prices
 from .forms import CompanyProfileForm, CustomerForm, DailyActivityForm, DailyActivityPlanForm, GoldLedgerEntryForm, GoldPriceForm, MaterialForm, OpenMarketChannelOptionFormSet, OpenMarketChannelSettingForm, OpenMarketProductForm, OpenMarketProductNameForm, OpenMarketWorkspaceForm, OrderForm, ProductColorForm, ProductForm, PurchaseHeaderForm, PurchaseLineFormSet, PurchaseSupplierForm, SaleHeaderForm, SaleLineFormSet
 from .models import CompanyProfile, Customer, DailyActivity, DailyActivityPhoto, Factory, GoldLedgerEntry, GoldPrice, MarketplaceOrder, MarketplaceOrderSyncState, MarketplaceProduct, MarketplaceSettlement, Material, OpenMarketChannelOffer, OpenMarketChannelSetting, OpenMarketMatchCandidate, OpenMarketProduct, OpenMarketVariant, Order, Product, ProductAlias, ProductColor, PurchaseBatch, PurchaseEntry, PurchaseSupplier, ReceivableAccount, SaleCustomerChangeLog, SaleItem, SaleTransaction, generate_transaction_no
 from .open_market_aliases import CHANNEL_ONLY_FIELDS, COMMON_FIELD_ALIASES
-from .marketplaces import MarketplaceError, channel_configuration, fetch_coupang_products, fetch_coupang_settlements, fetch_naver_products, fetch_naver_settlements
+from .marketplaces import MarketplaceError, channel_configuration, fetch_coupang_products, fetch_coupang_settlements, fetch_naver_products, fetch_naver_settlements, search_marketplace_categories
 from .marketplace_transformers import build_channel_preview
 from .marketplace_ai import ProductContentError, generate_product_content
 from .marketplace_publish import _naver_price_plan, publish_coupang, publish_naver, publish_readiness
@@ -173,6 +173,19 @@ def marketplace_workspace(request):
         "products": products, "rows": rows, "query": query, "selected_status": status,
         "status_choices": OpenMarketProduct.WORKSPACE_STATUS_CHOICES, "counts": counts,
     })
+
+
+def marketplace_category_search(request, channel):
+    if channel not in {"naver", "coupang"}:
+        return JsonResponse({"error": "지원하지 않는 마켓입니다."}, status=404)
+    query = request.GET.get("q", "").strip()
+    if len(query) < 2:
+        return JsonResponse({"error": "두 글자 이상 입력해 주세요."}, status=400)
+    try:
+        rows = search_marketplace_categories(channel, query)
+    except MarketplaceError as exc:
+        return JsonResponse({"error": str(exc)}, status=502)
+    return JsonResponse({"results": rows, "query": query})
 
 
 def marketplace_workspace_edit(request, pk=None):

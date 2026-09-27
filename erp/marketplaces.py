@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
 from datetime import date, datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
@@ -13,6 +14,10 @@ from urllib.request import Request, urlopen
 
 class MarketplaceError(Exception):
     pass
+
+
+_CATEGORY_CACHE = {}
+_CATEGORY_CACHE_SECONDS = 6 * 60 * 60
 
 
 def channel_configuration():
@@ -160,6 +165,133 @@ def fetch_coupang_products(max_pages=20):
         detailed.append(detail)
         time.sleep(0.15)
     return detailed
+
+
+def _normalize_category(code, name, path=None, *, recommended=False):
+    code = str(code or "").strip()
+    name = str(name or "").strip()
+    path = str(path or name).strip()
+    if not code or not name:
+        return None
+    return {"code": code, "name": name, "path": path, "recommended": recommended}
+
+
+def _cached_categories(channel, loader):
+    cached = _CATEGORY_CACHE.get(channel)
+    now = time.monotonic()
+    if cached and now - cached[0] < _CATEGORY_CACHE_SECONDS:
+        return cached[1]
+    rows = loader()
+    _CATEGORY_CACHE[channel] = (now, rows)
+    return rows
+
+
+def fetch_naver_categories():
+    """Return Naver leaf categories in a shared marketplace-neutral shape."""
+    def load():
+        if not channel_configuration()["naver"]["configured"]:
+            raise MarketplaceError("네이버 API 키가 설정되지 않아 카테고리를 불러올 수 없습니다.")
+        token = _naver_token()
+        result = _json_request(
+            "https://api.commerce.naver.com/external/v1/categories?last=true",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        source = result.get("data", []) if isinstance(result, dict) else result
+        rows = []
+        for item in source or []:
+            if not isinstance(item, dict) or item.get("last") is False:
+                continue
+            category = _normalize_category(
+                item.get("id") or item.get("categoryId"),
+                item.get("name"),
+                item.get("wholeCategoryName") or item.get("name"),
+            )
+            if category:
+                rows.append(category)
+        return rows
+    return _cached_categories("naver", load)
+
+
+def fetch_coupang_categories():
+    """Return active Coupang display categories from the official flat list API."""
+    def load():
+        if not channel_configuration()["coupang"]["configured"]:
+            raise MarketplaceError("쿠팡 API 키가 설정되지 않아 카테고리를 불러올 수 없습니다.")
+        path = "/v2/providers/seller_api/apis/api/v1/marketplace/meta/display-categories"
+        result = _json_request(
+            f"https://api-gateway.coupang.com{path}",
+            headers=_coupang_headers("GET", path),
+        )
+        source = result.get("data", []) if isinstance(result, dict) else result
+        if isinstance(source, dict):
+            source = source.get("content") or source.get("categories") or source.get("child") or [source]
+        rows = []
+        for item in source or []:
+            if not isinstance(item, dict) or str(item.get("status", "ACTIVE")).upper() != "ACTIVE":
+                continue
+            category = _normalize_category(
+                item.get("displayCategoryCode") or item.get("displayItemCategoryCode") or item.get("id"),
+                item.get("name") or item.get("displayCategoryName"),
+                item.get("wholeCategoryName") or item.get("path") or item.get("name"),
+            )
+            if category:
+                rows.append(category)
+        return rows
+    return _cached_categories("coupang", load)
+
+
+def recommend_coupang_category(product_name):
+    if not channel_configuration()["coupang"]["configured"]:
+        raise MarketplaceError("쿠팡 API 키가 설정되지 않아 카테고리를 추천할 수 없습니다.")
+    path = "/v2/providers/openapi/apis/api/v1/categorization/predict"
+    result = _json_request(
+        f"https://api-gateway.coupang.com{path}", method="POST",
+        headers=_coupang_headers("POST", path), body={"productName": product_name},
+    )
+    data = result.get("data", {}) if isinstance(result, dict) else {}
+    if data.get("autoCategorizationPredictionResultType") != "SUCCESS":
+        return None
+    return _normalize_category(
+        data.get("predictedCategoryId"), data.get("predictedCategoryName"),
+        data.get("predictedCategoryName"), recommended=True,
+    )
+
+
+def search_marketplace_categories(channel, query, limit=40):
+    """Search category names while tolerating model/material words in a product name."""
+    query = str(query or "").strip()
+    if channel not in {"naver", "coupang"}:
+        raise MarketplaceError("지원하지 않는 마켓입니다.")
+    if len(query) < 2:
+        return []
+    categories = fetch_naver_categories() if channel == "naver" else fetch_coupang_categories()
+    tokens = [token.casefold() for token in re.findall(r"[0-9A-Za-z가-힣]+", query)]
+    ignored = {"14k", "18k", "24k", "s925", "oro", "골드", "실버", "금", "은", "여성", "남성", "데일리"}
+    tokens = [token for token in tokens if len(token) >= 2 and token not in ignored and not token.isdigit()]
+    compact_query = re.sub(r"\s+", "", query).casefold()
+    scored = []
+    for category in categories:
+        name = category["name"].casefold()
+        path = category["path"].casefold()
+        compact_path = re.sub(r"\s+", "", path)
+        score = 100 if compact_query and compact_query in compact_path else 0
+        for token in tokens:
+            if token in name:
+                score += 30
+            elif token in path:
+                score += 15
+        if score:
+            scored.append((score, category["path"], category))
+    scored.sort(key=lambda row: (-row[0], len(row[1]), row[1]))
+    matches = [row[2] for row in scored[:limit]]
+    if channel == "coupang":
+        try:
+            recommendation = recommend_coupang_category(query)
+        except MarketplaceError:
+            recommendation = None
+        if recommendation:
+            matches = [recommendation] + [row for row in matches if row["code"] != recommendation["code"]]
+    return matches[:limit]
 
 
 def _number(value):
