@@ -266,8 +266,12 @@ def search_marketplace_categories(channel, query, limit=40):
         return []
     categories = fetch_naver_categories() if channel == "naver" else fetch_coupang_categories()
     tokens = [token.casefold() for token in re.findall(r"[0-9A-Za-z가-힣]+", query)]
-    ignored = {"14k", "18k", "24k", "s925", "oro", "골드", "실버", "금", "은", "여성", "남성", "데일리"}
+    ignored = {"oro", "골드", "금", "은", "여성", "남성", "데일리"}
     tokens = [token for token in tokens if len(token) >= 2 and token not in ignored and not token.isdigit()]
+    if "24k" in tokens:
+        tokens.append("순금")
+    if "s925" in tokens:
+        tokens.append("실버")
     compact_query = re.sub(r"\s+", "", query).casefold()
     scored = []
     for category in categories:

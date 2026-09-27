@@ -775,13 +775,14 @@ class MarketplaceCategoryApiTests(TestCase):
         }])
 
     @patch("erp.marketplaces.fetch_naver_categories")
-    def test_product_name_search_ignores_material_words(self, categories):
+    def test_product_name_search_prefers_material_specific_categories(self, categories):
         from erp.marketplaces import search_marketplace_categories
         categories.return_value = [
-            {"code": "1", "name": "목걸이", "path": "패션잡화>주얼리>목걸이", "recommended": False},
-            {"code": "2", "name": "귀걸이", "path": "패션잡화>주얼리>귀걸이", "recommended": False},
+            {"code": "1", "name": "건강목걸이", "path": "생활/건강>건강관리용품>건강목걸이", "recommended": False},
+            {"code": "2", "name": "14K목걸이", "path": "패션잡화>주얼리>목걸이>14K목걸이", "recommended": False},
+            {"code": "3", "name": "18K목걸이", "path": "패션잡화>주얼리>목걸이>18K목걸이", "recommended": False},
         ]
 
         rows = search_marketplace_categories("naver", "14K 18K ORO-362 데일리 골드 목걸이")
 
-        self.assertEqual([row["code"] for row in rows], ["1"])
+        self.assertEqual([row["code"] for row in rows], ["2", "3", "1"])
