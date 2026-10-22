@@ -1277,6 +1277,33 @@ class SaleStructureTests(TestCase):
         self.assertEqual(response.context["end_date"], latest_date.isoformat())
         self.assertContains(response, "LATEST-SALE")
 
+    def test_sales_list_material_summary_shows_actual_and_pure_weights(self):
+        today = timezone.localdate()
+        sale = SaleTransaction.objects.create(customer=self.customer, sale_date=today)
+        sold = SaleItem.objects.create(
+            transaction=sale, entry_type="sale", model_number="14K-SALE",
+            material=self.material_14, weight=Decimal("10.000"),
+            settlement_weight=Decimal("8.000"), quantity=1, loss_rate=Decimal("2"), unit_price=1000,
+        )
+        returned = SaleItem.objects.create(
+            transaction=sale, entry_type="return", model_number="14K-RETURN",
+            material=self.material_14, weight=Decimal("2.000"),
+            settlement_weight=Decimal("1.500"), quantity=1, loss_rate=Decimal("2"), unit_price=1000,
+        )
+
+        response = self.client.get(reverse("erp:sales_list"), {
+            "start_date": today.isoformat(), "end_date": today.isoformat(),
+        })
+
+        rows = {row["name"]: row for row in response.context["material_summary"]}
+        self.assertEqual(rows["14K"]["actual_weight"], Decimal("6.500"))
+        self.assertEqual(rows["14K"]["pure_weight"], sold.pure_gold_weight - returned.pure_gold_weight)
+        self.assertEqual(rows["18K"]["actual_weight"], Decimal("0"))
+        self.assertEqual(rows["24K"]["actual_weight"], Decimal("0"))
+        self.assertEqual(response.context["material_summary_period"], f"오늘 · {today.isoformat()}")
+        self.assertContains(response, "환산 전 중량(g)")
+        self.assertContains(response, "순금환산(g)")
+
     def test_checked_sale_item_can_be_returned_once(self):
         sale = SaleTransaction.objects.create(
             customer=self.customer, sale_date=timezone.localdate() - timedelta(days=1)

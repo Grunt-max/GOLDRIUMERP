@@ -2180,17 +2180,37 @@ def sales_list(request):
     net_sales_labor = entry_type_summary["sale"]["labor"] - entry_type_summary["return"]["labor"]
     receivable_pure = net_sales_pure - entry_type_summary["payment"]["pure_weight"]
     receivable_labor = net_sales_labor - entry_type_summary["payment"]["labor"]
-    material_totals = {}
+    material_totals = {
+        name: {
+            "name": name,
+            "actual_weight": Decimal("0"),
+            "pure_weight": Decimal("0"),
+            "labor": Decimal("0"),
+        }
+        for name in ("14K", "18K", "24K")
+    }
     for order in summary_orders:
         if order.entry_type == "payment":
             continue
         direction = Decimal("1") if order.entry_type == "sale" else Decimal("-1")
         name = order.material.name if order.material else "미지정"
-        row = material_totals.setdefault(name, {"name": name, "pure_weight": Decimal("0"), "labor": Decimal("0")})
+        row = material_totals.setdefault(name, {
+            "name": name,
+            "actual_weight": Decimal("0"),
+            "pure_weight": Decimal("0"),
+            "labor": Decimal("0"),
+        })
+        actual_weight = order.settlement_weight if order.settlement_weight is not None else order.total_weight
+        row["actual_weight"] += actual_weight * direction
         row["pure_weight"] += order.pure_gold_weight * direction
         row["labor"] += order.total_amount * direction
+    material_total_actual_weight = sum((row["actual_weight"] for row in material_totals.values()), Decimal("0"))
     material_total_pure_weight = sum((row["pure_weight"] for row in material_totals.values()), Decimal("0"))
     material_total_labor = sum((row["labor"] for row in material_totals.values()), Decimal("0"))
+    if start_date == end_date:
+        material_summary_period = f"오늘 · {start_date}" if start_date == today_date.isoformat() else f"{start_date} 당일"
+    else:
+        material_summary_period = f"{start_date} ~ {end_date}"
     if page_size not in {"30", "50", "100"}:
         page_size = "30"
     page_obj = Paginator(display_orders, int(page_size)).get_page(request.GET.get("page"))
@@ -2206,7 +2226,9 @@ def sales_list(request):
         "total_gold_receivable": total_gold_receivable,
         "total_labor": total_labor, "total_paid_labor": total_paid_labor, "total_unpaid_labor": total_unpaid_labor,
         "material_summary": material_totals.values(), "result_count": len(display_orders),
+        "material_total_actual_weight": material_total_actual_weight,
         "material_total_pure_weight": material_total_pure_weight, "material_total_labor": material_total_labor,
+        "material_summary_period": material_summary_period,
         "net_sales_pure": net_sales_pure, "net_sales_labor": net_sales_labor,
         "receivable_pure": receivable_pure, "receivable_labor": receivable_labor,
         "entry_type_summary": entry_type_summary.values(), "include_deleted": include_deleted,
