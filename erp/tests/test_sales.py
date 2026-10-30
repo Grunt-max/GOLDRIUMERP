@@ -609,6 +609,33 @@ class SaleStructureTests(TestCase):
         self.assertContains(response, f"[{self.customer.name} / 코코미수] 거래 명세서", count=2)
         self.assertContains(response, "미수계정 · 코코미수", count=2)
 
+    def test_statement_moves_items_after_ten_to_next_printed_page(self):
+        sale = SaleTransaction.objects.create(
+            transaction_no="26103000001", sale_date=date(2026, 10, 30), customer=self.customer,
+        )
+        for item_number in range(1, 14):
+            SaleItem.objects.create(
+                transaction=sale, entry_type="sale", model_number=f"PAGE-{item_number:02d}",
+                material=self.material_14, color=self.color_p, weight=Decimal("1.000"),
+                quantity=1, loss_rate=0, unit_price=1000,
+            )
+        sale.refresh_totals()
+
+        response = self.client.get(reverse("erp:sale_transaction_detail", args=[sale.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        pages = response.context["statement_pages"]
+        self.assertEqual(len(pages), 2)
+        self.assertEqual([len(page["items"]) for page in pages], [10, 3])
+        self.assertEqual([len(page["empty_rows"]) for page in pages], [0, 7])
+        self.assertEqual([page["item_number_start"] for page in pages], [0, 10])
+        self.assertContains(response, 'class="statement-page"', count=2)
+        self.assertContains(response, "(판매-반품) 소계 [1 / 2]", count=2)
+        self.assertContains(response, "(판매-반품) 소계 [2 / 2]", count=2)
+        self.assertContains(response, "PAGE-10", count=2)
+        self.assertContains(response, "PAGE-11", count=2)
+        self.assertContains(response, "거래 후 미수", count=2)
+
     def test_customer_loss_rate_can_be_edited(self):
         response = self.client.post(reverse("erp:customer_edit", args=[self.customer.pk]), {
             "name": self.customer.name,

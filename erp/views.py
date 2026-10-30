@@ -2320,23 +2320,52 @@ def sale_transaction_detail(request, pk):
         "quantity": current["sale"]["quantity"] - current["return"]["quantity"],
         "labor": current["sale"]["labor"] - current["return"]["labor"],
     }
-    material_net_weights = {}
-    for material_name in ("14K", "18K", "24K"):
-        sold_weight = sum((item.total_weight for item in items if item.entry_type == "sale" and item.material and item.material.name.upper() == material_name), Decimal("0"))
-        returned_weight = sum((item.total_weight for item in items if item.entry_type == "return" and item.material and item.material.name.upper() == material_name), Decimal("0"))
-        material_net_weights[material_name] = sold_weight - returned_weight
+    statement_pages = []
+    page_size = 10
+    total_pages = max(1, (len(items) + page_size - 1) // page_size)
+    for page_index in range(total_pages):
+        page_items = items[page_index * page_size:(page_index + 1) * page_size]
+        page_material_net_weights = {}
+        for material_name in ("14K", "18K", "24K"):
+            sold_weight = sum((
+                item.total_weight for item in page_items
+                if item.entry_type == "sale" and item.material
+                and item.material.name.upper() == material_name
+            ), Decimal("0"))
+            returned_weight = sum((
+                item.total_weight for item in page_items
+                if item.entry_type == "return" and item.material
+                and item.material.name.upper() == material_name
+            ), Decimal("0"))
+            page_material_net_weights[material_name] = sold_weight - returned_weight
+        statement_pages.append({
+            "items": page_items,
+            "empty_rows": range(page_size - len(page_items)),
+            "item_number_start": page_index * page_size,
+            "page_number": page_index + 1,
+            "total_pages": total_pages,
+            "is_last": page_index == total_pages - 1,
+            "material_net_weights": page_material_net_weights,
+            "net_current": {
+                "quantity": sum((
+                    item.quantity * (1 if item.entry_type == "sale" else -1)
+                    for item in page_items if item.entry_type in {"sale", "return"}
+                ), 0),
+                "labor": sum((
+                    item.total_amount * (1 if item.entry_type == "sale" else -1)
+                    for item in page_items if item.entry_type in {"sale", "return"}
+                ), Decimal("0")),
+            },
+        })
     company_profile = CompanyProfile.objects.first() or CompanyProfile()
     return render(request, "erp/sale_transaction_detail.html", {
         "sale": sale,
-        "items": items,
-        "empty_rows": range(max(0, 10 - len(items))),
+        "statement_pages": statement_pages,
         "copies": (1, 2),
         "prior": prior,
         "current": current,
         "after": after,
         "recent_payment": recent_payment,
-        "net_current": net_current,
-        "material_net_weights": material_net_weights,
         "company_profile": company_profile,
         "statement_supplier_name": sale.customer.supplier_name_override or company_profile.supplier_name,
         "receivable_account": receivable_account,
