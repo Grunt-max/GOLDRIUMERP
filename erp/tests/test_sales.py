@@ -1331,6 +1331,33 @@ class SaleStructureTests(TestCase):
         self.assertContains(response, "환산 전 중량(g)")
         self.assertContains(response, "순금환산(g)")
 
+    def test_sales_list_shows_actual_weight_loss_margin_and_full_memo(self):
+        today = timezone.localdate()
+        sale = SaleTransaction.objects.create(customer=self.customer, sale_date=today)
+        full_memo = "비고사항 전체 문장이 말줄임 없이 화면 안에 모두 표시되어야 합니다"
+        item = SaleItem.objects.create(
+            transaction=sale, entry_type="sale",
+            model_number="VERY-LONG-MODEL-NUMBER-FOR-COMPACT-COLUMN",
+            material=self.material_14, color=self.color_p,
+            weight=Decimal("10.000"), settlement_weight=Decimal("8.000"),
+            quantity=1, loss_rate=Decimal("2"), unit_price=1000, memo=full_memo,
+        )
+
+        response = self.client.get(reverse("erp:sales_list"), {
+            "start_date": today.isoformat(), "end_date": today.isoformat(),
+        })
+
+        displayed = response.context["items"][0]
+        self.assertEqual(displayed.pk, item.pk)
+        self.assertEqual(displayed.display_actual_weight, Decimal("8.000"))
+        self.assertEqual(
+            displayed.display_loss_margin,
+            item.pure_gold_weight - Decimal("8.000") * self.material_14.purity_rate,
+        )
+        self.assertContains(response, "환산 전<br>중량(g)", html=True)
+        self.assertContains(response, "해리<br>마진(g)", html=True)
+        self.assertContains(response, full_memo)
+
     def test_checked_sale_item_can_be_returned_once(self):
         sale = SaleTransaction.objects.create(
             customer=self.customer, sale_date=timezone.localdate() - timedelta(days=1)

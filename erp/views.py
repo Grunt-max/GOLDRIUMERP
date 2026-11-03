@@ -2214,6 +2214,15 @@ def sales_list(request):
     if page_size not in {"30", "50", "100"}:
         page_size = "30"
     page_obj = Paginator(display_orders, int(page_size)).get_page(request.GET.get("page"))
+    for order in page_obj.object_list:
+        order.display_actual_weight = (
+            order.settlement_weight if order.settlement_weight is not None else order.total_weight
+        )
+        if order.material and order.material.uses_loss_rate:
+            base_pure_weight = order.display_actual_weight * order.material.purity_rate
+            order.display_loss_margin = order.pure_gold_weight - base_pure_weight
+        else:
+            order.display_loss_margin = Decimal("0")
     page_query_params = request.GET.copy()
     page_query_params.pop("page", None)
     return render(request, "erp/sales_list.html", {

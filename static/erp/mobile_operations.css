@@ -12,3 +12,11 @@
 }
 .mobile-sale-product-table{display:none}
 @media(max-width:700px){.mobile-sale-product-table{display:grid}}
+@media(max-width:700px){
+  .legacy-table tbody td:nth-child(8),.legacy-table tbody td:nth-child(9),.legacy-table tbody td:nth-child(10),.legacy-table tbody td:nth-child(12),.legacy-table tbody td:nth-child(13),.legacy-table tbody td:nth-child(14){display:none!important}
+  .legacy-table tbody td:nth-child(11){grid-row:4;grid-column:2/5;max-width:none!important;white-space:normal;color:#687780}
+  .legacy-table tbody td:nth-child(15){grid-row:5;grid-column:2}
+  .legacy-table tbody td:nth-child(16){grid-row:5;grid-column:3/5}
+  .mobile-sale-product-table span:nth-last-child(-n+2){border-bottom:1px solid #c5d0d6}
+  .mobile-sale-product-table span:last-child{grid-column:1/-1;border-right:0;border-bottom:0}
+}
