@@ -45,15 +45,15 @@
 .legacy-table th,.legacy-table td{padding:3px 2px;text-align:center;vertical-align:middle}
 .legacy-table .col-no{width:24px}
 .legacy-table .col-check{width:24px}
-.legacy-table .col-date{width:52px}
-.legacy-table .col-state{width:38px}
-.legacy-table .col-customer{width:72px}
-.legacy-table .col-transaction{width:58px}
-.legacy-table .col-model{width:88px}
-.legacy-table .col-material{width:40px}
-.legacy-table .col-color{width:30px}
+.legacy-table .col-date{width:48px}
+.legacy-table .col-state{width:34px}
+.legacy-table .col-customer{width:62px}
+.legacy-table .col-transaction{width:52px}
+.legacy-table .col-model{width:100px}
+.legacy-table .col-material{width:34px}
+.legacy-table .col-color{width:26px}
 .legacy-table .col-weight{width:58px}
-.legacy-table .col-memo{width:120px}
+.legacy-table .col-memo{width:142px}
 .legacy-table .col-quantity{width:34px}
 .legacy-table .col-pure{width:58px}
 .legacy-table .col-margin{width:52px}
