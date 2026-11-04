@@ -1357,6 +1357,7 @@ class SaleStructureTests(TestCase):
         self.assertContains(response, "환산 전<br>중량(g)", html=True)
         self.assertContains(response, "해리<br>마진(g)", html=True)
         self.assertContains(response, full_memo)
+        self.assertContains(response, "weight-material-14k")
 
     def test_checked_sale_item_can_be_returned_once(self):
         sale = SaleTransaction.objects.create(
